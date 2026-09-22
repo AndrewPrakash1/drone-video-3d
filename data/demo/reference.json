@@ -1,0 +1,46 @@
+{
+  "name": "north_rooftop_eave",
+  "true_length_m": 20.0,
+  "a": {
+    "lat": 28.5448721811379,
+    "lon": 77.19229781959021,
+    "height": 441.0000128718093
+  },
+  "b": {
+    "lat": 28.5448721811379,
+    "lon": 77.1925021804098,
+    "height": 441.0000128718093
+  },
+  "a_enu": [
+    -10.0,
+    8.0,
+    9.0
+  ],
+  "b_enu": [
+    10.0,
+    8.0,
+    9.0
+  ],
+  "tolerance_m": 1.0,
+  "tolerance_pct": 5.0,
+  "note": "Synthetic proxy building. Event data will replace this reference.",
+  "self_check": {
+    "measured_m": 20.0,
+    "true_length_m": 20.0,
+    "abs_error_m": 0.0,
+    "pct_error": 0.0,
+    "tolerance_m": 1.0,
+    "pass": true,
+    "name": "north_rooftop_eave",
+    "a_enu": [
+      -10.0,
+      8.0,
+      9.0
+    ],
+    "b_enu": [
+      10.0,
+      8.0,
+      9.0
+    ]
+  }
+}

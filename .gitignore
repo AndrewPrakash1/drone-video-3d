@@ -1,0 +1,10 @@
+node_modules/
+.next/
+public/cesium/
+__pycache__/
+*.pyc
+.venv/
+dist/
+.DS_Store
+*.egg-info/
+.DS_Store
