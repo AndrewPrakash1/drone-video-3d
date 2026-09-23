@@ -7,12 +7,13 @@ The dashboard reconstructs incrementally in Cesium, colors the cloud by confiden
 ## What runs here
 
 - **Proxy mission** (no upload): South Delhi synthetic flyby of a building whose north eave is **20.0 m**.
-- **Upload**: 1080p/4K clip + telemetry CSV. CPU reconstruction always runs. COLMAP and VGGT are used only if present.
+- **Upload**: 1080p/4K clip + telemetry CSV. CPU reconstruction always runs. **VGGT** runs on CUDA when the official package is installed; **COLMAP** sparse points are fused into the live globe when `colmap` is on PATH.
+- GPU laptop (RTX 5070 Ti): [docs/gpu-colmap.md](docs/gpu-colmap.md)
 - Export: georeferenced PLY (`/jobs/{id}/cloud.ply`).
 
 ## Run locally
 
-Need Python 3.11+, Node 20+, FFmpeg, and (optional) COLMAP / CUDA+VGGT weights.
+Need Python 3.11+, Node 20+, FFmpeg. COLMAP and CUDA+VGGT are optional — see [docs/gpu-colmap.md](docs/gpu-colmap.md).
 
 ```bash
 python3 -m pip install -r backend/requirements.txt
@@ -43,10 +44,10 @@ timestamp,lat,lon,alt,heading,speed,hdop,rtk
 
 ## Architecture
 
-Hybrid reconstruction: intelligent frame selection → GPS-weighted poses → CPU/VGGT chunk geometry → optional COLMAP refine → Open3D mesh → confidence + metric report → Cesium.
+Hybrid reconstruction: intelligent frame selection → GPS-weighted poses → VGGT chunks (if CUDA) or CPU geometry → COLMAP sparse fusion (if installed) → Open3D mesh → confidence + metric report → Cesium.
 
 See [docs/sih26158.md](docs/sih26158.md) for the official eight challenges and adapter notes.
 
 ## Hardware
 
-A field box with an RTX-class GPU can set `VGGT_WEIGHTS` and install COLMAP. This prototype is sized for a CPU workstation: fewer frames, voxel downsampling, honest low-confidence regions.
+A field box with an RTX-class GPU (e.g. 5070 Ti laptop) should follow [docs/gpu-colmap.md](docs/gpu-colmap.md). The AMD Radeon 610M iGPU is ignored. This prototype still runs on CPU without those extras.

@@ -1,0 +1,7 @@
+# Optional GPU extras (install on the RTX laptop, not required for CPU demo)
+
+# Install torch first from https://pytorch.org with a CUDA 12.8+ wheel, then:
+# pip install -r backend/requirements-gpu.txt
+
+huggingface_hub>=0.24.0
+Pillow>=10.0.0

@@ -36,6 +36,25 @@ const CesiumGlobe = dynamic(
   { ssr: false, loading: () => <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading globe…</div> },
 );
 
+type AdapterState = {
+  vggt: boolean | { available?: boolean; cuda?: boolean; package?: boolean; device?: string | null; reason?: string | null };
+  colmap: boolean;
+};
+
+function vggtReady(v: AdapterState["vggt"]): boolean {
+  if (typeof v === "boolean") return v;
+  return Boolean(v?.available);
+}
+
+function vggtLabel(v: AdapterState["vggt"]): string {
+  if (vggtReady(v)) {
+    const device = typeof v === "object" ? v.device : null;
+    return device ? `ready on ${device}` : "ready";
+  }
+  if (typeof v === "object" && v?.reason) return `CPU fallback (${v.reason})`;
+  return "CPU fallback";
+}
+
 type Pose = { lat: number; lon: number; alt: number; heading?: number; hdop?: number };
 type JobState = "idle" | "running" | "done" | "error";
 
@@ -56,13 +75,22 @@ export default function MissionPage() {
   const [reference, setReference] = useState<Reference | null>(null);
   const [origin, setOrigin] = useState<{ lat: number; lon: number; alt: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [adapters, setAdapters] = useState({ vggt: false, colmap: false });
+  const [adapters, setAdapters] = useState<AdapterState>({ vggt: false, colmap: false });
+  const [reconMode, setReconMode] = useState<string>("cpu");
   const [timeline, setTimeline] = useState<{ t: number; score: number; keep: boolean }[]>([]);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
 
   useEffect(() => {
     fetchReference().then(setReference).catch(() => undefined);
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((h) => {
+        if (h?.vggt || h?.colmap != null) {
+          setAdapters({ vggt: h.vggt ?? false, colmap: Boolean(h.colmap) });
+        }
+      })
+      .catch(() => undefined);
   }, []);
 
   const onPick = useCallback((pt: GeoPoint) => {
@@ -95,6 +123,7 @@ export default function MissionPage() {
         setOrigin(data.origin);
         if (data.reference) setReference(data.reference);
         if (data.adapters) setAdapters(data.adapters);
+        if (data.mode) setReconMode(data.mode);
         if (data.frames?.timeline) setTimeline(data.frames.timeline);
       }
       if (data.type === "chunk") {
@@ -106,7 +135,7 @@ export default function MissionPage() {
         }
         if (data.stats) setStats(data.stats);
         if (data.challenges) setChallenges(data.challenges);
-        setMessage(`Chunk ${data.index + 1}/${data.total} fused into the live model`);
+        setMessage(`Chunk ${data.index + 1}/${data.total} fused (${data.source || "geo"})`);
       }
       if (data.type === "done") {
         setState("done");
@@ -260,7 +289,7 @@ export default function MissionPage() {
                 </Button>
               </div>
               <p className="text-[11px] text-slate-500">
-                CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. IMU/RTK optional. COLMAP {adapters.colmap ? "detected" : "not on PATH"}; VGGT {adapters.vggt ? "ready" : "CPU fallback"}.
+                CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}.
               </p>
             </CardContent>
           </Card>

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from .adapters.colmap import colmap_available
-from .adapters.vggt import vggt_available
+from .adapters.vggt import vggt_available, vggt_status
 from .demo_scene import write_demo_files
 from .geo import Origin, geodetic_to_enu, make_origin
 from .jobs import create_job, get_job, sse_stream
@@ -36,7 +36,7 @@ def _startup() -> None:
 def health() -> dict:
     return {
         "ok": True,
-        "vggt": vggt_available(),
+        "vggt": vggt_status(),
         "colmap": colmap_available(),
     }
 
