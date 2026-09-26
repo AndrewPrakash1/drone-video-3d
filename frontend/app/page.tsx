@@ -379,16 +379,14 @@ export default function MissionPage() {
               onPick={onPick}
             />
             {showEmptyHint ? (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-[#070b14]/55">
-                <div className="pointer-events-auto max-w-md space-y-3 rounded-xl border border-white/10 bg-slate-900/90 p-6 text-center shadow-xl">
-                  <MapPin className="mx-auto h-10 w-10 text-cyan-400" />
-                  <h2 className="text-xl font-medium">South Delhi proxy scene</h2>
-                  <p className="text-sm text-slate-400">
-                    The globe is live. Click <strong className="text-slate-200">Run proxy mission</strong> to stream a 20.0 m rooftop eave you can measure for judges.
+              <div className="pointer-events-none absolute bottom-3 left-3 right-3 flex justify-center">
+                <div className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-xl border border-white/10 bg-slate-950/85 px-4 py-3 shadow-xl">
+                  <MapPin className="h-5 w-5 shrink-0 text-cyan-400" />
+                  <p className="text-sm text-slate-300">
+                    3D city is live. Run the proxy mission to drop the model on these rooftops and check the 20.0 m eave.
                   </p>
-                  <Button onClick={onDemo} disabled={state === "running"}>
-                    {state === "running" ? <Loader2 className="animate-spin" /> : null}
-                    Start proxy flyby
+                  <Button onClick={onDemo} disabled={state === "running"} className="shrink-0">
+                    Start flyby
                   </Button>
                 </div>
               </div>
