@@ -26,6 +26,7 @@ import {
   apiUrl,
   getApiBase,
   measurePoints,
+  startBrighton,
   startDemo,
   startUpload,
   type Challenge,
@@ -305,6 +306,25 @@ export default function MissionPage() {
     }
   }
 
+  async function onBrighton() {
+    setError(null);
+    setPoints([]);
+    setTrajectory([]);
+    setPicks([]);
+    setMetric(null);
+    setReference(null);
+    setProgress(4);
+    setState("running");
+    setMessage("Brighton Beach — real DJI survey, syncing GPS and reconstructing…");
+    try {
+      const job = await startBrighton();
+      setJobId(job.id);
+    } catch (e) {
+      setState("error");
+      setError(e instanceof Error ? e.message : "Could not start Brighton Beach");
+    }
+  }
+
   async function onUpload() {
     if (!videoFile || !csvFile) {
       setError("Choose a video file and a telemetry CSV.");
@@ -354,6 +374,9 @@ export default function MissionPage() {
           <Button onClick={onDemo} disabled={state === "running"} className="bg-cyan-500 text-slate-950 hover:bg-cyan-400">
             {state === "running" ? <Loader2 className="animate-spin" /> : <Radar />}
             Run proxy mission
+          </Button>
+          <Button onClick={onBrighton} disabled={state === "running"} variant="outline">
+            Real DJI flight
           </Button>
         </div>
       </header>

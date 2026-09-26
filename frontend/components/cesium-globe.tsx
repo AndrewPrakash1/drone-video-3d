@@ -131,6 +131,7 @@ export function CesiumGlobe({
   const pickRef = useRef(onPick);
   const referenceRef = useRef(reference);
   const groundRef = useRef(216);
+  const flewAway = useRef(false);
   const [cesiumError, setCesiumError] = useState<string | null>(null);
   colorRef.current = colorMode;
   pickRef.current = onPick;
@@ -236,7 +237,13 @@ export function CesiumGlobe({
         drawnRef.current = 0;
       }
     }
-    addOsmBuildings(viewer, Cesium, points[0].lat, points[0].lon).catch((err) => console.error(err));
+    const lat = points[0].lat;
+    const lon = points[0].lon;
+    if (!flewAway.current && (Math.abs(lat - 28.5448) > 0.05 || Math.abs(lon - 77.1924) > 0.05)) {
+      flewAway.current = true;
+      lookOblique(viewer, Cesium, lat, lon);
+    }
+    addOsmBuildings(viewer, Cesium, lat, lon).catch((err) => console.error(err));
   }, [points]);
 
   useEffect(() => {

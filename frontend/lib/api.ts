@@ -109,6 +109,12 @@ export async function checkHealth(): Promise<{ ok: boolean; vggt?: unknown; colm
   return res.json();
 }
 
+export async function startBrighton(): Promise<{ id: string }> {
+  const res = await apiFetch("/jobs/brighton", { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function startDemo(): Promise<{ id: string }> {
   const res = await apiFetch("/jobs/demo", { method: "POST" });
   if (!res.ok) throw new Error(await res.text());

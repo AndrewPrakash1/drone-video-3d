@@ -46,8 +46,8 @@ def health() -> dict:
 def osm_buildings(lat: float = 28.5448, lon: float = 77.1924, radius_m: float = 1100.0) -> dict:
     try:
         buildings = fetch_buildings(lat, lon, radius_m)
-    except Exception as exc:
-        raise HTTPException(502, f"OSM buildings unavailable: {exc}") from exc
+    except Exception:
+        buildings = []
     return {"lat": lat, "lon": lon, "count": len(buildings), "buildings": buildings}
 
 
@@ -59,6 +59,20 @@ def demo_reference() -> dict:
     import json
 
     return json.loads(path.read_text())
+
+
+BRIGHTON = ROOT / "data" / "brighton"
+
+
+@app.post("/jobs/brighton")
+async def start_brighton() -> dict:
+    video = BRIGHTON / "flight.mp4"
+    telem = BRIGHTON / "telemetry.csv"
+    if not video.exists() or not telem.exists():
+        raise HTTPException(404, "Brighton Beach flight is not in data/brighton")
+    job = create_job("brighton")
+    asyncio.create_task(run_upload(job, video, telem.read_text(encoding="utf-8")))
+    return {"id": job.id, "kind": "brighton", "dataset": "OpenDroneMap Brighton Beach"}
 
 
 @app.post("/jobs/demo")

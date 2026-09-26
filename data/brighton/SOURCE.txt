@@ -1,0 +1,7 @@
+Brighton Beach drone survey
+Source: https://github.com/pierotofy/drone_dataset_brighton_beach
+Author: Piero Toffanin, 2017
+License: BSD 2-Clause
+18 DJI nadir photos with GPS EXIF, Lake Superior shoreline, Duluth, Minnesota.
+flight.mp4 is a 1280x720, 0.5 fps encoding of those frames in filename order.
+telemetry.csv is the GPS latitude, longitude, and altitude read from each photo.
