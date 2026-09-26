@@ -20,6 +20,8 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import {
+  API_BASE,
+  checkHealth,
   fetchReference,
   measurePoints,
   startDemo,
@@ -80,17 +82,18 @@ export default function MissionPage() {
   const [timeline, setTimeline] = useState<{ t: number; score: number; keep: boolean }[]>([]);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [apiOk, setApiOk] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetchReference().then(setReference).catch(() => undefined);
-    fetch("/api/health")
-      .then((r) => r.json())
+    checkHealth()
       .then((h) => {
+        setApiOk(Boolean(h.ok));
         if (h?.vggt || h?.colmap != null) {
-          setAdapters({ vggt: h.vggt ?? false, colmap: Boolean(h.colmap) });
+          setAdapters({ vggt: (h.vggt as AdapterState["vggt"]) ?? false, colmap: Boolean(h.colmap) });
         }
       })
-      .catch(() => undefined);
+      .catch(() => setApiOk(false));
   }, []);
 
   const onPick = useCallback((pt: GeoPoint) => {
@@ -108,7 +111,7 @@ export default function MissionPage() {
 
   useEffect(() => {
     if (!jobId) return;
-    const es = new EventSource(`/api/jobs/${jobId}/events`);
+    const es = new EventSource(`${API_BASE}/jobs/${jobId}/events`);
     es.onmessage = (ev) => {
       const data = JSON.parse(ev.data);
       if (data.type === "end") {
@@ -150,7 +153,7 @@ export default function MissionPage() {
       }
     };
     es.onerror = () => {
-      /* keep open; proxy may stall briefly */
+      setError(`Lost live stream from API at ${API_BASE}. Is uvicorn still running?`);
     };
     return () => es.close();
   }, [jobId]);
@@ -211,8 +214,13 @@ export default function MissionPage() {
           <h1 className="text-lg font-semibold tracking-tight">OnePass — single-pass drone video to 3D</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {apiOk === false ? (
+            <Badge variant="destructive">API offline — start uvicorn on 8765</Badge>
+          ) : apiOk === true ? (
+            <Badge className="bg-emerald-500/20 text-emerald-200">API connected</Badge>
+          ) : null}
           {statusBadge}
-          <Button onClick={onDemo} disabled={state === "running"} className="bg-cyan-500 text-slate-950 hover:bg-cyan-400">
+          <Button onClick={onDemo} disabled={state === "running" || apiOk === false} className="bg-cyan-500 text-slate-950 hover:bg-cyan-400">
             {state === "running" ? <Loader2 className="animate-spin" /> : <Radar />}
             Run proxy mission
           </Button>
@@ -398,7 +406,7 @@ export default function MissionPage() {
 
           {jobId && state === "done" ? (
             <Button variant="outline" asChild>
-              <a href={`/api/jobs/${jobId}/cloud.ply`}>
+              <a href={`${API_BASE}/jobs/${jobId}/cloud.ply`}>
                 <Download /> Download PLY
               </a>
             </Button>
