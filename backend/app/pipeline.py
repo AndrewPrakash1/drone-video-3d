@@ -158,6 +158,10 @@ async def run_demo(job: Job, data_root: Path) -> None:
         await asyncio.sleep(0.85)
 
     write_ply(job.artifact_dir / "cloud.ply", fused)
+    (job.artifact_dir / "cloud.json").write_text(
+        json.dumps({"points": [_point_payload(p, o, ORIGIN_ALT) for p in fused]}),
+        encoding="utf-8",
+    )
     mesh_info = mesh_from_points(fused, job.artifact_dir / "mesh.ply")
     traj = [
         {"lat": r["lat"], "lon": r["lon"], "alt": r["alt"]}
@@ -417,6 +421,10 @@ async def run_upload(job: Job, video_path: Path, telemetry_text: str) -> None:
             )
 
     write_ply(job.artifact_dir / "cloud.ply", fused)
+    (job.artifact_dir / "cloud.json").write_text(
+        json.dumps({"points": [_point_payload(p, o, origin_alt) for p in fused]}),
+        encoding="utf-8",
+    )
     mesh_info = mesh_from_points(fused, job.artifact_dir / "mesh.ply")
     traj = [{"lat": s.lat, "lon": s.lon, "alt": s.alt} for s in track.samples]
     (job.artifact_dir / "trajectory.geojson").write_text(

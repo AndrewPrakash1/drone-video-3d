@@ -41,6 +41,72 @@ def get_job(jid: str) -> Job | None:
     return JOBS.get(jid)
 
 
+def job_snapshot(job: Job) -> dict[str, Any]:
+    """Rebuild dashboard state from stored SSE events or cloud.json."""
+    points: list[dict[str, Any]] = []
+    meta: dict[str, Any] | None = None
+    pose: dict[str, Any] | None = None
+    trajectory: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {}
+    challenges: list[dict[str, Any]] = []
+    message = ""
+    progress = 0
+    result = job.result or None
+
+    for event in job.events:
+        et = event.get("type")
+        if et == "meta":
+            meta = event
+        elif et == "status":
+            message = str(event.get("message") or message)
+            progress = int(event.get("progress") or progress)
+        elif et == "chunk":
+            points.extend(event.get("points") or [])
+            if event.get("pose"):
+                pose = event["pose"]
+                trajectory.append(event["pose"])
+            if event.get("stats"):
+                stats = event["stats"]
+            if event.get("challenges"):
+                challenges = event["challenges"]
+            progress = int(event.get("progress") or progress)
+        elif et == "done":
+            message = str(event.get("message") or message)
+            progress = 100
+            result = event.get("result") or result
+
+    cloud_path = job.artifact_dir / "cloud.json"
+    if cloud_path.exists():
+        try:
+            points = json.loads(cloud_path.read_text(encoding="utf-8")).get("points") or points
+        except json.JSONDecodeError:
+            pass
+
+    return {
+        "id": job.id,
+        "kind": job.kind,
+        "status": job.status,
+        "error": job.error,
+        "message": message,
+        "progress": progress,
+        "origin": (meta or {}).get("origin") or (result or {}).get("origin"),
+        "reference": (meta or {}).get("reference"),
+        "adapters": (meta or {}).get("adapters") or (result or {}).get("adapters"),
+        "mode": (meta or {}).get("mode") or (result or {}).get("mode"),
+        "points": points,
+        "pose": pose,
+        "trajectory": trajectory,
+        "stats": stats or {
+            "points": len(points),
+            "high": sum(1 for p in points if (p.get("conf") or 0) >= 0.72),
+            "medium": sum(1 for p in points if 0.42 <= (p.get("conf") or 0) < 0.72),
+            "low": sum(1 for p in points if (p.get("conf") or 0) < 0.42),
+        },
+        "challenges": challenges,
+        "result": result,
+    }
+
+
 async def emit(job: Job, event: dict[str, Any]) -> None:
     job.events.append(event)
     pending = job.waiters

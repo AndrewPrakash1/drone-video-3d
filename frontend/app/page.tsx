@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Download,
@@ -20,14 +20,16 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import {
-  API_BASE,
   checkHealth,
+  fetchJobSnapshot,
   fetchReference,
+  getApiBase,
   measurePoints,
   startDemo,
   startUpload,
   type Challenge,
   type GeoPoint,
+  type JobSnapshot,
   type MeasureResult,
   type Reference,
 } from "@/lib/api";
@@ -60,6 +62,54 @@ function vggtLabel(v: AdapterState["vggt"]): string {
 type Pose = { lat: number; lon: number; alt: number; heading?: number; hdop?: number };
 type JobState = "idle" | "running" | "done" | "error";
 
+function applySnapshot(
+  snap: JobSnapshot,
+  setters: {
+    setMessage: (m: string) => void;
+    setProgress: (p: number) => void;
+    setPoints: (p: GeoPoint[]) => void;
+    setPose: (p: Pose | null) => void;
+    setTrajectory: (t: Pose[]) => void;
+    setStats: (s: { points: number; high: number; medium: number; low: number }) => void;
+    setChallenges: (c: Challenge[]) => void;
+    setOrigin: (o: { lat: number; lon: number; alt: number } | null) => void;
+    setReference: (r: Reference | null) => void;
+    setAdapters: (a: AdapterState) => void;
+    setReconMode: (m: string) => void;
+    setMetric: (m: MeasureResult | null) => void;
+    setState: (s: JobState) => void;
+    setError: (e: string | null) => void;
+  },
+) {
+  if (snap.message) setters.setMessage(snap.message);
+  if (snap.progress) setters.setProgress(snap.progress);
+  if (snap.origin) setters.setOrigin(snap.origin);
+  if (snap.reference) setters.setReference(snap.reference);
+  if (snap.adapters) {
+    setters.setAdapters({
+      vggt: (snap.adapters.vggt as AdapterState["vggt"]) ?? false,
+      colmap: Boolean(snap.adapters.colmap),
+    });
+  }
+  if (snap.mode) setters.setReconMode(snap.mode);
+  if (snap.points?.length) setters.setPoints(snap.points);
+  if (snap.pose) setters.setPose(snap.pose);
+  if (snap.trajectory?.length) setters.setTrajectory(snap.trajectory);
+  if (snap.stats) setters.setStats(snap.stats);
+  if (snap.challenges?.length) setters.setChallenges(snap.challenges);
+  if (snap.result?.metric) setters.setMetric(snap.result.metric);
+  if (snap.status === "done") {
+    setters.setState("done");
+    setters.setProgress(100);
+    setters.setError(null);
+  } else if (snap.status === "error") {
+    setters.setState("error");
+    setters.setError(snap.error || "Reconstruction failed");
+  } else if (snap.status === "running") {
+    setters.setState("running");
+  }
+}
+
 export default function MissionPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [state, setState] = useState<JobState>("idle");
@@ -83,18 +133,48 @@ export default function MissionPage() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [apiOk, setApiOk] = useState<boolean | null>(null);
+  const [apiBase, setApiBase] = useState("http://127.0.0.1:8765");
+  const pointsReceivedRef = useRef(0);
 
-  useEffect(() => {
-    fetchReference().then(setReference).catch(() => undefined);
+  const snapshotSetters = useMemo(
+    () => ({
+      setMessage,
+      setProgress,
+      setPoints,
+      setPose,
+      setTrajectory,
+      setStats,
+      setChallenges,
+      setOrigin,
+      setReference,
+      setAdapters,
+      setReconMode,
+      setMetric,
+      setState,
+      setError,
+    }),
+    [],
+  );
+
+  const refreshHealth = useCallback(() => {
     checkHealth()
       .then((h) => {
         setApiOk(Boolean(h.ok));
+        setApiBase(getApiBase());
         if (h?.vggt || h?.colmap != null) {
           setAdapters({ vggt: (h.vggt as AdapterState["vggt"]) ?? false, colmap: Boolean(h.colmap) });
         }
       })
-      .catch(() => setApiOk(false));
+      .catch(() => {
+        setApiOk(false);
+        setError("Cannot reach API on port 8765. Start uvicorn in the backend folder.");
+      });
   }, []);
+
+  useEffect(() => {
+    fetchReference().then(setReference).catch(() => undefined);
+    refreshHealth();
+  }, [refreshHealth]);
 
   const onPick = useCallback((pt: GeoPoint) => {
     setPicks((prev) => {
@@ -111,52 +191,99 @@ export default function MissionPage() {
 
   useEffect(() => {
     if (!jobId) return;
-    const es = new EventSource(`${API_BASE}/jobs/${jobId}/events`);
-    es.onmessage = (ev) => {
-      const data = JSON.parse(ev.data);
-      if (data.type === "end") {
-        es.close();
-        return;
-      }
+    pointsReceivedRef.current = 0;
+    const base = getApiBase();
+    setApiBase(base);
+    const es = new EventSource(`${base}/jobs/${jobId}/events`);
+
+    const handleEvent = (data: Record<string, unknown>) => {
+      if (data.type === "end") return;
       if (data.type === "status") {
-        setMessage(data.message);
-        setProgress(data.progress ?? 8);
+        setMessage(String(data.message || ""));
+        setProgress(Number(data.progress ?? 8));
       }
       if (data.type === "meta") {
-        setOrigin(data.origin);
-        if (data.reference) setReference(data.reference);
-        if (data.adapters) setAdapters(data.adapters);
-        if (data.mode) setReconMode(data.mode);
-        if (data.frames?.timeline) setTimeline(data.frames.timeline);
+        const meta = data as {
+          origin?: { lat: number; lon: number; alt: number };
+          reference?: Reference;
+          adapters?: AdapterState;
+          mode?: string;
+          frames?: { timeline?: { t: number; score: number; keep: boolean }[] };
+        };
+        if (meta.origin) setOrigin(meta.origin);
+        if (meta.reference) setReference(meta.reference);
+        if (meta.adapters) setAdapters(meta.adapters);
+        if (meta.mode) setReconMode(meta.mode);
+        if (meta.frames?.timeline) setTimeline(meta.frames.timeline);
       }
       if (data.type === "chunk") {
-        setProgress(data.progress ?? progress);
-        setPoints((p) => p.concat(data.points || []));
-        if (data.pose) {
-          setPose(data.pose);
-          setTrajectory((t) => t.concat(data.pose));
+        const chunkPts = (data.points as GeoPoint[]) || [];
+        if (chunkPts.length) {
+          pointsReceivedRef.current += chunkPts.length;
+          setPoints((p) => p.concat(chunkPts));
         }
-        if (data.stats) setStats(data.stats);
-        if (data.challenges) setChallenges(data.challenges);
-        setMessage(`Chunk ${data.index + 1}/${data.total} fused (${data.source || "geo"})`);
+        if (data.pose) {
+          setPose(data.pose as Pose);
+          setTrajectory((t) => t.concat(data.pose as Pose));
+        }
+        if (data.stats) setStats(data.stats as typeof stats);
+        if (data.challenges) setChallenges(data.challenges as Challenge[]);
+        setProgress(Number(data.progress ?? progress));
+        setMessage(`Chunk ${Number(data.index) + 1}/${data.total} fused (${data.source || "geo"})`);
       }
       if (data.type === "done") {
         setState("done");
         setProgress(100);
-        setMessage(data.message);
-        if (data.result?.metric) setMetric(data.result.metric);
+        setMessage(String(data.message || "Reconstruction complete"));
+        const result = data.result as { metric?: MeasureResult } | undefined;
+        if (result?.metric) setMetric(result.metric);
       }
       if (data.type === "error") {
         setState("error");
-        setError(data.message);
-        setMessage(data.message);
+        setError(String(data.message || "Reconstruction failed"));
+        setMessage(String(data.message || "Reconstruction failed"));
       }
     };
-    es.onerror = () => {
-      setError(`Lost live stream from API at ${API_BASE}. Is uvicorn still running?`);
+
+    es.onmessage = (ev) => {
+      try {
+        handleEvent(JSON.parse(ev.data));
+      } catch {
+        /* ignore malformed */
+      }
     };
-    return () => es.close();
-  }, [jobId]);
+    es.onerror = async () => {
+      try {
+        const snap = await fetchJobSnapshot(jobId);
+        applySnapshot(snap, snapshotSetters);
+        if (snap.points?.length) es.close();
+      } catch {
+        setError(`Lost live stream from ${base}. Click Run proxy mission again.`);
+      }
+    };
+
+    const poll = window.setInterval(async () => {
+      try {
+        const snap = await fetchJobSnapshot(jobId);
+        if (snap.status === "done" || snap.status === "error") {
+          applySnapshot(snap, snapshotSetters);
+          window.clearInterval(poll);
+          es.close();
+          return;
+        }
+        if (pointsReceivedRef.current === 0 && snap.points?.length) {
+          applySnapshot(snap, snapshotSetters);
+        }
+      } catch {
+        /* still running */
+      }
+    }, 2000);
+
+    return () => {
+      window.clearInterval(poll);
+      es.close();
+    };
+  }, [jobId, progress, snapshotSetters]);
 
   async function onDemo() {
     setError(null);
@@ -164,10 +291,11 @@ export default function MissionPage() {
     setTrajectory([]);
     setPicks([]);
     setMetric(null);
-    setProgress(2);
+    setProgress(4);
     setState("running");
     setMessage("Starting proxy single-pass mission…");
     try {
+      refreshHealth();
       const job = await startDemo();
       setJobId(job.id);
     } catch (e) {
@@ -206,6 +334,8 @@ export default function MissionPage() {
     return <Badge variant="secondary">Idle</Badge>;
   }, [state]);
 
+  const showEmptyHint = state === "idle" && points.length === 0;
+
   return (
     <div className="flex min-h-screen flex-col bg-[#070b14] text-slate-100">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
@@ -220,39 +350,53 @@ export default function MissionPage() {
             <Badge className="bg-emerald-500/20 text-emerald-200">API connected</Badge>
           ) : null}
           {statusBadge}
-          <Button onClick={onDemo} disabled={state === "running" || apiOk === false} className="bg-cyan-500 text-slate-950 hover:bg-cyan-400">
+          <Button onClick={onDemo} disabled={state === "running"} className="bg-cyan-500 text-slate-950 hover:bg-cyan-400">
             {state === "running" ? <Loader2 className="animate-spin" /> : <Radar />}
             Run proxy mission
           </Button>
         </div>
       </header>
 
+      {apiOk === false ? (
+        <div className="border-b border-rose-500/30 bg-rose-950/40 px-4 py-2 text-sm text-rose-100">
+          Dashboard cannot reach the API at <code className="rounded bg-black/30 px-1">{apiBase}</code>. In a second PowerShell window run:
+          <code className="ml-2 rounded bg-black/30 px-2 py-0.5 text-xs">cd backend; $env:PYTHONPATH=&quot;.&quot;; python -m uvicorn app.main:app --host 127.0.0.1 --port 8765</code>
+          <Button size="sm" variant="outline" className="ml-3" onClick={refreshHealth}>Retry</Button>
+        </div>
+      ) : null}
+
       <main className="grid flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_340px]">
         <section className="flex min-h-[520px] flex-col gap-3">
-          <div className="min-h-[480px] flex-1">
-            {state === "idle" && points.length === 0 ? (
-              <Card className="flex h-full min-h-[480px] items-center justify-center border-white/10 bg-slate-900/40">
-                <CardContent className="max-w-md space-y-3 text-center">
+          <div className="relative min-h-[480px] flex-1">
+            <CesiumGlobe
+              points={points}
+              pose={pose}
+              trajectory={trajectory}
+              colorMode={colorMode}
+              measuring={measuring}
+              reference={reference}
+              onPick={onPick}
+            />
+            {showEmptyHint ? (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-[#070b14]/55">
+                <div className="pointer-events-auto max-w-md space-y-3 rounded-xl border border-white/10 bg-slate-900/90 p-6 text-center shadow-xl">
                   <MapPin className="mx-auto h-10 w-10 text-cyan-400" />
-                  <h2 className="text-xl font-medium">No reconstruction yet</h2>
+                  <h2 className="text-xl font-medium">South Delhi proxy scene</h2>
                   <p className="text-sm text-slate-400">
-                    Event data arrives only at the hackathon. Run the South Delhi proxy flyby to reconstruct a building with a
-                    known 20.0 m rooftop, then measure it. Or upload your own 1080p/4K clip plus GPS CSV.
+                    The globe is live. Click <strong className="text-slate-200">Run proxy mission</strong> to stream a 20.0 m rooftop eave you can measure for judges.
                   </p>
-                  <Button onClick={onDemo}>Start proxy flyby</Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <CesiumGlobe
-                points={points}
-                pose={pose}
-                trajectory={trajectory}
-                colorMode={colorMode}
-                measuring={measuring}
-                reference={state !== "idle" ? reference : null}
-                onPick={onPick}
-              />
-            )}
+                  <Button onClick={onDemo} disabled={state === "running"}>
+                    {state === "running" ? <Loader2 className="animate-spin" /> : null}
+                    Start proxy flyby
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {state === "running" && points.length === 0 ? (
+              <div className="pointer-events-none absolute left-3 top-3 rounded-md bg-black/70 px-3 py-1.5 text-xs text-cyan-100">
+                Reconstructing… points will appear in a few seconds
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-400">Color</span>
@@ -297,7 +441,7 @@ export default function MissionPage() {
                 </Button>
               </div>
               <p className="text-[11px] text-slate-500">
-                CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}.
+                API: {apiBase}. CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}.
               </p>
             </CardContent>
           </Card>
@@ -406,7 +550,7 @@ export default function MissionPage() {
 
           {jobId && state === "done" ? (
             <Button variant="outline" asChild>
-              <a href={`${API_BASE}/jobs/${jobId}/cloud.ply`}>
+              <a href={`${apiBase}/jobs/${jobId}/cloud.ply`}>
                 <Download /> Download PLY
               </a>
             </Button>

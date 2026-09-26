@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GeoPoint, Reference } from "@/lib/api";
 
 declare global {
@@ -78,6 +78,7 @@ export function CesiumGlobe({
   const colorRef = useRef(colorMode);
   const pickRef = useRef(onPick);
   const referenceRef = useRef(reference);
+  const [cesiumError, setCesiumError] = useState<string | null>(null);
   colorRef.current = colorMode;
   pickRef.current = onPick;
   referenceRef.current = reference;
@@ -154,7 +155,10 @@ export function CesiumGlobe({
           },
         });
       })
-      .catch((err) => console.error(err));
+      .catch((err) => {
+        console.error(err);
+        setCesiumError("Cesium failed to load. Run: cd frontend && node scripts/copy-cesium.mjs");
+      });
 
     return () => {
       canceled = true;
@@ -250,6 +254,11 @@ export function CesiumGlobe({
   return (
     <div className="relative h-full min-h-[420px] w-full overflow-hidden rounded-xl border border-white/10">
       <div ref={containerRef} className="h-full w-full" />
+      {cesiumError ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#070b14] p-6 text-center text-sm text-rose-200">
+          {cesiumError}
+        </div>
+      ) : null}
       {measuring ? (
         <div className="pointer-events-none absolute left-3 top-3 rounded-md bg-black/70 px-3 py-1.5 text-xs text-cyan-100">
           Measure mode — click two points on the model

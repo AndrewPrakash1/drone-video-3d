@@ -11,7 +11,7 @@ from .adapters.colmap import colmap_available
 from .adapters.vggt import vggt_available, vggt_status
 from .demo_scene import write_demo_files
 from .geo import Origin, geodetic_to_enu, make_origin
-from .jobs import create_job, get_job, sse_stream
+from .jobs import create_job, get_job, job_snapshot, sse_stream
 from .metric import evaluate
 from .pipeline import run_demo, run_upload
 
@@ -91,6 +91,14 @@ def job_status(jid: str) -> dict:
         "result": job.result,
         "events": len(job.events),
     }
+
+
+@app.get("/jobs/{jid}/snapshot")
+def job_snapshot_route(jid: str) -> dict:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    return job_snapshot(job)
 
 
 @app.get("/jobs/{jid}/events")
