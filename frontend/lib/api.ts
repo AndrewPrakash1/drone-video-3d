@@ -1,14 +1,27 @@
-/** Direct backend URL avoids Next.js proxy issues with SSE on Windows. */
+/**
+ * Same-origin /api is first so the browser talks only to the dashboard
+ * (port 43123). Next rewrites that to the API. Direct :8765 is a fallback.
+ */
 const DIRECT_CANDIDATES = [
+  "",
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, ""),
   "http://127.0.0.1:8765",
   "http://localhost:8765",
-].filter(Boolean) as string[];
+].filter((v): v is string => v != null);
 
-let resolvedBase = DIRECT_CANDIDATES[0] ?? "http://127.0.0.1:8765";
+let resolvedBase = "";
 
 export function getApiBase(): string {
   return resolvedBase;
+}
+
+export function apiUrl(path: string): string {
+  return urlFor(resolvedBase, path);
+}
+
+function urlFor(base: string, path: string): string {
+  if (!base) return `/api${path}`;
+  return `${base}${path}`;
 }
 
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -16,7 +29,7 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   let lastError: unknown;
   for (const base of bases) {
     try {
-      const res = await fetch(`${base}${path}`, init);
+      const res = await fetch(urlFor(base, path), init);
       if (res.ok) {
         resolvedBase = base;
         return res;
@@ -26,14 +39,7 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
       lastError = err;
     }
   }
-  try {
-    const res = await fetch(`/api${path}`, init);
-    if (res.ok) return res;
-    return res;
-  } catch (err) {
-    lastError = err;
-  }
-  throw lastError instanceof Error ? lastError : new Error("API unreachable on port 8765");
+  throw lastError instanceof Error ? lastError : new Error("API unreachable. Start uvicorn on port 8765.");
 }
 
 export type GeoPoint = {

@@ -154,6 +154,9 @@ export function CesiumGlobe({
             pitch: Cesium.Math.toRadians(-45),
           },
         });
+        requestAnimationFrame(() => {
+          if (!viewer.isDestroyed()) viewer.resize();
+        });
       })
       .catch((err) => {
         console.error(err);
@@ -252,8 +255,8 @@ export function CesiumGlobe({
   }, [pose, trajectory, reference]);
 
   return (
-    <div className="relative h-full min-h-[420px] w-full overflow-hidden rounded-xl border border-white/10">
-      <div ref={containerRef} className="h-full w-full" />
+    <div className="relative h-[70vh] min-h-[520px] w-full overflow-hidden rounded-xl border border-white/10 bg-[#0b1220]">
+      <div ref={containerRef} className="absolute inset-0" />
       {cesiumError ? (
         <div className="absolute inset-0 flex items-center justify-center bg-[#070b14] p-6 text-center text-sm text-rose-200">
           {cesiumError}

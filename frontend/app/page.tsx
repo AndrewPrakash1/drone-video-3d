@@ -23,6 +23,7 @@ import {
   checkHealth,
   fetchJobSnapshot,
   fetchReference,
+  apiUrl,
   getApiBase,
   measurePoints,
   startDemo,
@@ -193,8 +194,8 @@ export default function MissionPage() {
     if (!jobId) return;
     pointsReceivedRef.current = 0;
     const base = getApiBase();
-    setApiBase(base);
-    const es = new EventSource(`${base}/jobs/${jobId}/events`);
+    setApiBase(base || "/api");
+    const es = new EventSource(apiUrl(`/jobs/${jobId}/events`));
 
     const handleEvent = (data: Record<string, unknown>) => {
       if (data.type === "end") return;
@@ -550,7 +551,7 @@ export default function MissionPage() {
 
           {jobId && state === "done" ? (
             <Button variant="outline" asChild>
-              <a href={`${apiBase}/jobs/${jobId}/cloud.ply`}>
+              <a href={apiUrl(`/jobs/${jobId}/cloud.ply`)}>
                 <Download /> Download PLY
               </a>
             </Button>
