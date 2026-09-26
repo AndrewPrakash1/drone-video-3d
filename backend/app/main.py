@@ -13,6 +13,7 @@ from .demo_scene import write_demo_files
 from .geo import Origin, geodetic_to_enu, make_origin
 from .jobs import create_job, get_job, job_snapshot, sse_stream
 from .metric import evaluate
+from .osm_buildings import fetch_buildings
 from .pipeline import run_demo, run_upload
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,15 @@ def health() -> dict:
         "vggt": vggt_status(),
         "colmap": colmap_available(),
     }
+
+
+@app.get("/osm/buildings")
+def osm_buildings(lat: float = 28.5448, lon: float = 77.1924, radius_m: float = 1100.0) -> dict:
+    try:
+        buildings = fetch_buildings(lat, lon, radius_m)
+    except Exception as exc:
+        raise HTTPException(502, f"OSM buildings unavailable: {exc}") from exc
+    return {"lat": lat, "lon": lon, "count": len(buildings), "buildings": buildings}
 
 
 @app.get("/demo/reference")

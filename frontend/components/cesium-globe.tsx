@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { GeoPoint, Reference } from "@/lib/api";
+import { apiUrl, type GeoPoint, type Reference } from "@/lib/api";
 
 declare global {
   interface Window {
@@ -48,6 +48,58 @@ function loadCesium(): Promise<any> {
   });
 }
 
+function lookOblique(viewer: any, Cesium: any, lat: number, lon: number) {
+  // Camera sits above the map surface (ellipsoid) so building walls are visible.
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(lon - 0.00115, lat - 0.0017, 85),
+    orientation: {
+      heading: Cesium.Math.toRadians(28),
+      pitch: Cesium.Math.toRadians(-28),
+      roll: 0,
+    },
+    duration: 1.1,
+  });
+}
+
+async function addOsmBuildings(viewer: any, Cesium: any, lat: number, lon: number) {
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  if (viewer.__osmKey === key) return;
+  viewer.__osmKey = key;
+  const stale = viewer.entities.values.filter((e: any) => e.osmBuilding);
+  stale.forEach((e: any) => viewer.entities.remove(e));
+  const res = await fetch(apiUrl(`/osm/buildings?lat=${lat}&lon=${lon}`));
+  if (!res.ok) return;
+  const data = await res.json();
+  const buildings = data.buildings || [];
+  for (const b of buildings) {
+    const ring: number[][] = b.ring || [];
+    if (ring.length < 4) continue;
+    const flat: number[] = [];
+    for (const pair of ring) flat.push(pair[0], pair[1]);
+    const h = Math.max(Number(b.height) || 9, 8);
+    const positions = Cesium.Cartesian3.fromDegreesArray(flat);
+    viewer.entities.add({
+      osmBuilding: true,
+      wall: {
+        positions,
+        minimumHeights: ring.map(() => 0),
+        maximumHeights: ring.map(() => h),
+        material: Cesium.Color.fromCssColorString("#f4f5f7"),
+      },
+    });
+    viewer.entities.add({
+      osmBuilding: true,
+      polygon: {
+        hierarchy: positions,
+        height: h,
+        material: Cesium.Color.WHITE,
+        outline: false,
+      },
+    });
+  }
+  lookOblique(viewer, Cesium, lat, lon);
+}
+
 function colorFor(p: GeoPoint, mode: ColorMode, Cesium: any) {
   if (mode === "rgb" && p.r != null) {
     return Cesium.Color.fromBytes(p.r, p.g ?? 0, p.b ?? 0, 220);
@@ -78,6 +130,7 @@ export function CesiumGlobe({
   const colorRef = useRef(colorMode);
   const pickRef = useRef(onPick);
   const referenceRef = useRef(reference);
+  const groundRef = useRef(216);
   const [cesiumError, setCesiumError] = useState<string | null>(null);
   colorRef.current = colorMode;
   pickRef.current = onPick;
@@ -106,9 +159,12 @@ export function CesiumGlobe({
         });
         viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#0b1220");
         viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#070b14");
-        viewer.scene.globe.enableLighting = false;
+        viewer.scene.globe.enableLighting = true;
+        viewer.scene.globe.depthTestAgainstTerrain = false;
         viewer.scene.skyBox.show = false;
         viewer.scene.skyAtmosphere.show = true;
+        viewer.scene.screenSpaceCameraController.enableTilt = true;
+        viewer.scene.screenSpaceCameraController.enableLook = true;
         viewer.imageryLayers.addImageryProvider(
           new Cesium.UrlTemplateImageryProvider({
             url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -147,13 +203,8 @@ export function CesiumGlobe({
           });
         }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-        viewer.camera.setView({
-          destination: Cesium.Cartesian3.fromDegrees(77.1924, 28.5448, 650),
-          orientation: {
-            heading: Cesium.Math.toRadians(20),
-            pitch: Cesium.Math.toRadians(-45),
-          },
-        });
+        lookOblique(viewer, Cesium, 28.5448, 77.1924);
+        addOsmBuildings(viewer, Cesium, 28.5448, 77.1924).catch((err) => console.error(err));
         requestAnimationFrame(() => {
           if (!viewer.isDestroyed()) viewer.resize();
         });
@@ -175,6 +226,22 @@ export function CesiumGlobe({
   useEffect(() => {
     const Cesium = window.Cesium;
     const viewer = viewerRef.current;
+    if (!Cesium || !viewer || points.length < 30) return;
+    const hs = points.map((p) => p.height).filter((h) => Number.isFinite(h)).sort((a, b) => a - b);
+    const ground = hs[Math.floor(hs.length * 0.08)] ?? groundRef.current;
+    if (Math.abs(ground - groundRef.current) > 8) {
+      groundRef.current = ground;
+      if (primitivesRef.current) {
+        primitivesRef.current.removeAll();
+        drawnRef.current = 0;
+      }
+    }
+    addOsmBuildings(viewer, Cesium, points[0].lat, points[0].lon).catch((err) => console.error(err));
+  }, [points]);
+
+  useEffect(() => {
+    const Cesium = window.Cesium;
+    const viewer = viewerRef.current;
     if (!Cesium || !viewer) return;
     if (colorMode && primitivesRef.current) {
       primitivesRef.current.removeAll();
@@ -190,7 +257,7 @@ export function CesiumGlobe({
     for (let i = start; i < points.length; i++) {
       const p = points[i];
       collection.add({
-        position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.height),
+        position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.height - groundRef.current),
         color: colorFor(p, colorRef.current, Cesium),
         pixelSize: 5,
         id: { onepass: p },
@@ -213,7 +280,7 @@ export function CesiumGlobe({
         id: "traj",
         polyline: {
           positions: trajectory.map((p) =>
-            Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt),
+            Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt - groundRef.current),
           ),
           width: 2.5,
           material: Cesium.Color.fromCssColorString("#67e8f9"),
@@ -223,7 +290,7 @@ export function CesiumGlobe({
     if (pose) {
       viewer.entities.add({
         id: "uav",
-        position: Cesium.Cartesian3.fromDegrees(pose.lon, pose.lat, pose.alt),
+        position: Cesium.Cartesian3.fromDegrees(pose.lon, pose.lat, pose.alt - groundRef.current),
         point: { pixelSize: 14, color: Cesium.Color.fromCssColorString("#22d3ee"), outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
         label: {
           text: "UAV",
@@ -234,8 +301,8 @@ export function CesiumGlobe({
       });
     }
     if (reference) {
-      const a = Cesium.Cartesian3.fromDegrees(reference.a.lon, reference.a.lat, reference.a.height);
-      const b = Cesium.Cartesian3.fromDegrees(reference.b.lon, reference.b.lat, reference.b.height);
+      const a = Cesium.Cartesian3.fromDegrees(reference.a.lon, reference.a.lat, reference.a.height - groundRef.current);
+      const b = Cesium.Cartesian3.fromDegrees(reference.b.lon, reference.b.lat, reference.b.height - groundRef.current);
       viewer.entities.add({
         id: "ref-line",
         polyline: { positions: [a, b], width: 3, material: Cesium.Color.fromCssColorString("#c4b5fd") },
