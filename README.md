@@ -6,7 +6,7 @@ The dashboard reconstructs incrementally in Cesium, colors the cloud by confiden
 
 ## What runs here
 
-- **Proxy mission** (no upload):synthetic flyby of a building whose north eave is **20.0 m**.
+- **Proxy mission** (no upload): South Delhi synthetic flyby of a building whose north eave is **20.0 m**.
 - **Upload**: 1080p/4K clip + telemetry CSV. CPU reconstruction always runs. **VGGT** runs on CUDA when the official package is installed; **COLMAP** sparse points are fused into the live globe when `colmap` is on PATH.
 - GPU laptop (RTX 5070 Ti): [docs/gpu-colmap.md](docs/gpu-colmap.md)
 - Export: georeferenced PLY (`/jobs/{id}/cloud.ply`).
