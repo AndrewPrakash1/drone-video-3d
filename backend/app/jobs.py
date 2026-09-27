@@ -49,6 +49,8 @@ def job_snapshot(job: Job) -> dict[str, Any]:
     trajectory: list[dict[str, Any]] = []
     stats: dict[str, Any] = {}
     challenges: list[dict[str, Any]] = []
+    cameras: list[dict[str, Any]] = []
+    stages: dict[str, dict[str, Any]] = {}
     message = ""
     progress = 0
     result = job.result or None
@@ -60,8 +62,17 @@ def job_snapshot(job: Job) -> dict[str, Any]:
         elif et == "status":
             message = str(event.get("message") or message)
             progress = int(event.get("progress") or progress)
-        elif et == "chunk":
+        elif et == "stage":
+            stages[str(event.get("stage"))] = event
+            message = f"{event.get('label')} — {event.get('status')}"
+            progress = int(event.get("progress") or progress)
+        elif et == "pose" and event.get("pose"):
+            pose = event["pose"]
+            trajectory.append(event["pose"])
+        elif et in {"chunk", "sparse", "dense"}:
             points.extend(event.get("points") or [])
+            if event.get("cameras"):
+                cameras = event["cameras"]
             if event.get("pose"):
                 pose = event["pose"]
                 trajectory.append(event["pose"])
@@ -70,6 +81,9 @@ def job_snapshot(job: Job) -> dict[str, Any]:
             if event.get("challenges"):
                 challenges = event["challenges"]
             progress = int(event.get("progress") or progress)
+        elif et == "stats":
+            stats = event.get("stats") or stats
+            challenges = event.get("challenges") or challenges
         elif et == "done":
             message = str(event.get("message") or message)
             progress = 100
@@ -103,6 +117,8 @@ def job_snapshot(job: Job) -> dict[str, Any]:
             "low": sum(1 for p in points if (p.get("conf") or 0) < 0.42),
         },
         "challenges": challenges,
+        "cameras": cameras,
+        "stages": stages,
         "result": result,
     }
 

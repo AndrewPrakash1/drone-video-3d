@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -36,11 +35,7 @@ import {
   type Reference,
 } from "@/lib/api";
 import type { ColorMode } from "@/components/cesium-globe";
-
-const CesiumGlobe = dynamic(
-  () => import("@/components/cesium-globe").then((m) => m.CesiumGlobe),
-  { ssr: false, loading: () => <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading globe…</div> },
-);
+import { ReconViewport, type MeshPayload, type ReconCamera } from "@/components/recon-viewport";
 
 type AdapterState = {
   vggt: boolean | { available?: boolean; cuda?: boolean; package?: boolean; device?: string | null; reason?: string | null };
@@ -62,6 +57,7 @@ function vggtLabel(v: AdapterState["vggt"]): string {
 }
 
 type Pose = { lat: number; lon: number; alt: number; heading?: number; hdop?: number };
+type StageView = { stage: string; label: string; status: string; stats?: Record<string, unknown> };
 type JobState = "idle" | "running" | "done" | "error";
 
 function applySnapshot(
@@ -81,6 +77,8 @@ function applySnapshot(
     setMetric: (m: MeasureResult | null) => void;
     setState: (s: JobState) => void;
     setError: (e: string | null) => void;
+    setCameras: (c: ReconCamera[]) => void;
+    setStages: (s: Record<string, StageView>) => void;
   },
 ) {
   if (snap.message) setters.setMessage(snap.message);
@@ -99,6 +97,8 @@ function applySnapshot(
   if (snap.trajectory?.length) setters.setTrajectory(snap.trajectory);
   if (snap.stats) setters.setStats(snap.stats);
   if (snap.challenges?.length) setters.setChallenges(snap.challenges);
+  if (snap.cameras?.length) setters.setCameras(snap.cameras);
+  if (snap.stages) setters.setStages(snap.stages);
   if (snap.result?.metric) setters.setMetric(snap.result.metric);
   if (snap.status === "done") {
     setters.setState("done");
@@ -136,6 +136,9 @@ export default function MissionPage() {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [apiOk, setApiOk] = useState<boolean | null>(null);
   const [apiBase, setApiBase] = useState("http://127.0.0.1:8765");
+  const [cameras, setCameras] = useState<ReconCamera[]>([]);
+  const [stages, setStages] = useState<Record<string, StageView>>({});
+  const [mesh, setMesh] = useState<MeshPayload | null>(null);
   const pointsReceivedRef = useRef(0);
 
   const snapshotSetters = useMemo(
@@ -154,6 +157,8 @@ export default function MissionPage() {
       setMetric,
       setState,
       setError,
+      setCameras,
+      setStages,
     }),
     [],
   );
@@ -218,7 +223,17 @@ export default function MissionPage() {
         if (meta.mode) setReconMode(meta.mode);
         if (meta.frames?.timeline) setTimeline(meta.frames.timeline);
       }
-      if (data.type === "chunk") {
+      if (data.type === "stage") {
+        const stage = data as StageView;
+        setStages((prev) => ({ ...prev, [stage.stage]: stage }));
+        setMessage(`${stage.label} — ${stage.status}`);
+        setProgress(Number(data.progress ?? progress));
+      }
+      if (data.type === "pose" && data.pose) {
+        setPose(data.pose as Pose);
+        setTrajectory((t) => t.concat(data.pose as Pose));
+      }
+      if (data.type === "sparse" || data.type === "dense" || data.type === "chunk") {
         const chunkPts = (data.points as GeoPoint[]) || [];
         if (chunkPts.length) {
           pointsReceivedRef.current += chunkPts.length;
@@ -230,8 +245,11 @@ export default function MissionPage() {
         }
         if (data.stats) setStats(data.stats as typeof stats);
         if (data.challenges) setChallenges(data.challenges as Challenge[]);
+        if (data.cameras) setCameras(data.cameras as ReconCamera[]);
         setProgress(Number(data.progress ?? progress));
-        setMessage(`Chunk ${Number(data.index) + 1}/${data.total} fused (${data.source || "geo"})`);
+        if (data.type === "sparse") setMessage(`Sparse cloud · ${data.count ?? ""} points`);
+        else if (data.type === "dense") setMessage(`Dense cloud · ${data.count ?? ""} points`);
+        else setMessage(`Chunk ${Number(data.index) + 1}/${data.total} fused (${data.source || "geo"})`);
       }
       if (data.type === "done") {
         setState("done");
@@ -239,6 +257,10 @@ export default function MissionPage() {
         setMessage(String(data.message || "Reconstruction complete"));
         const result = data.result as { metric?: MeasureResult } | undefined;
         if (result?.metric) setMetric(result.metric);
+        fetch(apiUrl(`/jobs/${jobId}/mesh.json`))
+          .then((r) => (r.ok ? r.json() : null))
+          .then((m) => { if (m?.positions) setMesh(m as MeshPayload); })
+          .catch(() => undefined);
       }
       if (data.type === "error") {
         setState("error");
@@ -290,6 +312,9 @@ export default function MissionPage() {
   async function onDemo() {
     setError(null);
     setPoints([]);
+    setCameras([]);
+    setStages({});
+    setMesh(null);
     setTrajectory([]);
     setPicks([]);
     setMetric(null);
@@ -309,6 +334,9 @@ export default function MissionPage() {
   async function onBrighton() {
     setError(null);
     setPoints([]);
+    setCameras([]);
+    setStages({});
+    setMesh(null);
     setTrajectory([]);
     setPicks([]);
     setMetric(null);
@@ -332,6 +360,9 @@ export default function MissionPage() {
     }
     setError(null);
     setPoints([]);
+    setCameras([]);
+    setStages({});
+    setMesh(null);
     setTrajectory([]);
     setPicks([]);
     setMetric(null);
@@ -392,24 +423,16 @@ export default function MissionPage() {
       <main className="grid flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_340px]">
         <section className="flex min-h-[520px] flex-col gap-3">
           <div className="relative min-h-[480px] flex-1">
-            <CesiumGlobe
-              points={points}
-              pose={pose}
-              trajectory={trajectory}
-              colorMode={colorMode}
-              measuring={measuring}
-              reference={reference}
-              onPick={onPick}
-            />
+            <ReconViewport points={points} cameras={cameras} mesh={mesh} />
             {showEmptyHint ? (
               <div className="pointer-events-none absolute bottom-3 left-3 right-3 flex justify-center">
-                <div className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-xl border border-white/10 bg-slate-950/85 px-4 py-3 shadow-xl">
-                  <MapPin className="h-5 w-5 shrink-0 text-cyan-400" />
-                  <p className="text-sm text-slate-300">
-                    3D city is live. Run the proxy mission to drop the model on these rooftops and check the 20.0 m eave.
+                <div className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-xl border border-white/10 bg-black/70 px-4 py-3 shadow-xl">
+                  <MapPin className="h-5 w-5 shrink-0 text-amber-400" />
+                  <p className="text-sm text-slate-200">
+                    GPU viewport. Run the real DJI flight to reconstruct a point cloud, camera frustums, and Poisson mesh.
                   </p>
-                  <Button onClick={onDemo} disabled={state === "running"} className="shrink-0">
-                    Start flyby
+                  <Button onClick={onBrighton} disabled={state === "running"} className="shrink-0">
+                    Start flight
                   </Button>
                 </div>
               </div>
@@ -524,6 +547,43 @@ export default function MissionPage() {
                   Snap measure 20 m eave
                 </Button>
               ) : null}
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/10 bg-slate-900/50">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Photogrammetry</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {([
+                ["features", "Feature extraction (SIFT)"],
+                ["matching", "KNN + RANSAC"],
+                ["sfm", "Sparse SfM"],
+                ["ba", "Bundle adjustment"],
+                ["mvs", "Dense multi-view stereo"],
+                ["mesh", "Poisson surface"],
+                ["vggt", "VGGT neural (GPU)"],
+              ] as const).map(([id, fallback]) => {
+                const stage = stages[id];
+                return (
+                  <div key={id} className="flex items-start justify-between gap-2 text-xs">
+                    <div>
+                      <div className="text-slate-200">{stage?.label ?? fallback}</div>
+                      {stage?.stats ? (
+                        <div className="text-slate-500">
+                          {Object.entries(stage.stats)
+                            .filter(([k, v]) => ["keypoints", "ransac_inliers", "outliers_removed", "cameras", "points", "dense_points", "rmse_after_px", "method", "triangles", "chunks", "device", "reason"].includes(k) && v != null)
+                            .map(([k, v]) => `${k} ${v}`)
+                            .join(" · ")}
+                        </div>
+                      ) : null}
+                    </div>
+                    <Badge variant={stage?.status === "done" ? "default" : "secondary"} className="shrink-0">
+                      {stage?.status ?? "idle"}
+                    </Badge>
+                  </div>
+                );
+              })}
             </CardContent>
           </Card>
 

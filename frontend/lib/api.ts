@@ -100,6 +100,8 @@ export type JobSnapshot = {
   trajectory?: { lat: number; lon: number; alt: number; heading?: number; hdop?: number }[];
   stats?: { points: number; high: number; medium: number; low: number };
   challenges?: Challenge[];
+  cameras?: { e: number; n: number; u: number; rotation: number[]; fx: number; width: number; height: number }[];
+  stages?: Record<string, { stage: string; label: string; status: string; stats?: Record<string, unknown> }>;
   result?: { metric?: MeasureResult };
 };
 

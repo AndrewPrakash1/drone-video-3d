@@ -144,6 +144,17 @@ def job_cloud(jid: str) -> FileResponse:
     return FileResponse(path, filename="cloud.ply")
 
 
+@app.get("/jobs/{jid}/mesh.json")
+def job_mesh_json(jid: str) -> FileResponse:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    path = job.artifact_dir / "mesh.json"
+    if not path.exists():
+        raise HTTPException(404, "mesh not ready")
+    return FileResponse(path, media_type="application/json")
+
+
 @app.get("/jobs/{jid}/mesh.ply")
 def job_mesh(jid: str) -> FileResponse:
     job = get_job(jid)

@@ -28,6 +28,7 @@ from .geo import Origin, enu_to_geodetic, make_origin
 from .jobs import Job, emit
 from .mesh import mesh_from_points, write_ply
 from .metric import evaluate_segment
+from .photogrammetry.run import run_photogrammetry
 from .reconstruct import ReconPoint, triangulate_pair, voxel_downsample
 from .telemetry import TelemetryTrack, parse_telemetry_csv
 
@@ -212,15 +213,7 @@ async def run_upload(job: Job, video_path: Path, telemetry_text: str) -> None:
         await emit(job, {"type": "error", "message": str(exc)})
         return
 
-    await emit(
-        job,
-        {
-            "type": "status",
-            "message": f"Telemetry reliability {track.reliability:.2f} — extracting geometrically useful frames",
-            "progress": 6,
-        },
-    )
-
+    await emit(job, {"type": "status", "message": f"Telemetry reliability {track.reliability:.2f} — selecting frames", "progress": 3})
     try:
         scored = select_frames(str(video_path))
     except ValueError as exc:
@@ -235,224 +228,133 @@ async def run_upload(job: Job, video_path: Path, telemetry_text: str) -> None:
     first = track.samples[0]
     o = make_origin(first.lat, first.lon, 0.0)
     origin_alt = first.alt
-
-    await emit(
-        job,
-        {
-            "type": "meta",
-            "origin": {"lat": o.lat, "lon": o.lon, "alt": origin_alt},
-            "reference": None,
-            "adapters": {"vggt": vggt_status(), "colmap": colmap_available()},
-            "mode": _recon_mode(),
-            "frames": {
-                "scanned": len(scored),
-                "kept": len(kept),
-                "timeline": [
-                    {
-                        "t": f.t,
-                        "score": f.score,
-                        "keep": f.keep,
-                        "sharpness": f.sharpness,
-                        "features": f.features,
-                        "reasons": f.reasons,
-                    }
-                    for f in scored
-                ],
-            },
-            "telemetry_reliability": track.reliability,
-        },
-    )
-
-    cap = cv2.VideoCapture(str(video_path))
-    fused: list[ReconPoint] = []
     gps_down = track.reliability < 0.55
     use_vggt = vggt_available()
-    chunk_size = max(2, int(os.environ.get("VGGT_CHUNK_FRAMES", "4")))
-    keyframe_dir = job.artifact_dir / "keyframes"
-    keyframe_dir.mkdir(exist_ok=True)
-    poses_by_name: dict[str, object] = {}
+    mode = "photogrammetry" + ("+vggt" if use_vggt else "")
 
+    await emit(job, {
+        "type": "meta",
+        "origin": {"lat": o.lat, "lon": o.lon, "alt": origin_alt},
+        "reference": None,
+        "adapters": {"vggt": vggt_status(), "colmap": colmap_available()},
+        "mode": mode,
+        "frames": {"scanned": len(scored), "kept": len(kept), "timeline": [{"t": f.t, "score": f.score, "keep": f.keep} for f in scored]},
+        "telemetry_reliability": track.reliability,
+    })
     if not kept:
         job.status = "error"
         job.error = "No usable frames after quality gating"
         await emit(job, {"type": "error", "message": job.error})
-        cap.release()
         return
 
-    windows: list[list] = []
-    if use_vggt:
-        step = max(chunk_size - 1, 1)
-        i = 0
-        while i < len(kept):
-            windows.append(kept[i : i + chunk_size])
-            i += step
-            if i >= len(kept) and windows[-1][-1] is not kept[-1]:
-                break
-    else:
-        pairs = list(zip(kept, kept[1:])) or [(kept[0], kept[0])]
-        windows = [[a, b] for a, b in pairs]
+    max_frames = max(6, int(os.environ.get("ONEPASS_MAX_FRAMES", "24")))
+    if len(kept) > max_frames:
+        idx = np.linspace(0, len(kept) - 1, max_frames).round().astype(int)
+        kept = [kept[i] for i in sorted(set(idx.tolist()))]
 
-    n_win = max(len(windows), 1)
-    vggt_chunks = 0
-    cpu_chunks = 0
-    for i, window in enumerate(windows):
-        frames = []
-        poses = []
-        for fr in window:
-            img = _read_frame(cap, fr.index)
-            if img is None:
-                continue
-            name = f"frame_{fr.index:06d}.jpg"
-            cv2.imwrite(str(keyframe_dir / name), img)
-            sample = track.interpolate(fr.t)
-            poses_by_name[name] = sample
-            frames.append(img)
-            poses.append(sample)
-        if not frames:
+    cap = cv2.VideoCapture(str(video_path))
+    max_w = int(os.environ.get("ONEPASS_MAX_WIDTH", "1280"))
+    frames = []
+    samples = []
+    for fr in kept:
+        img = _read_frame(cap, fr.index)
+        if img is None:
             continue
-        chunk: list[ReconPoint] = []
-        source = "cpu"
-        if use_vggt and len(frames) >= 1:
-            neural = vggt_reconstruct_chunk(frames, poses, o, track.reliability)
-            if neural:
-                chunk = neural
-                source = "vggt"
-                vggt_chunks += 1
-        if not chunk:
-            fa, fb = frames[0], frames[-1]
-            pa, pb = poses[0], poses[-1]
-            chunk = triangulate_pair(fa, fb, pa, pb, o, track.reliability)
-            cpu_chunks += 1
-            source = "cpu"
-        fused.extend(chunk)
-        fused = voxel_downsample(fused, voxel=0.7)
-        sample = poses[-1]
-        await emit(
-            job,
-            {
-                "type": "chunk",
-                "index": i,
-                "total": n_win + (1 if colmap_available() else 0),
-                "progress": int(10 + 70 * (i + 1) / n_win),
-                "source": source,
-                "pose": {
-                    "lat": sample.lat,
-                    "lon": sample.lon,
-                    "alt": sample.alt,
-                    "heading": sample.heading,
-                    "hdop": sample.hdop,
-                },
-                "points": [_point_payload(p, o, 0.0) for p in chunk[:500]],
-                "stats": _stats(fused),
-                "challenges": _challenge_state(
-                    blur_dropped=blur_dropped,
-                    sparse=len(chunk) < 80 and source == "cpu",
-                    gps_downweighted=gps_down,
-                    illumination=illum,
-                    dynamic=True,
-                    occlusions=True,
-                    near_rt=True,
-                    metric=True,
-                ),
-            },
-        )
-        await asyncio.sleep(0.02)
-
+        if img.shape[1] > max_w:
+            s = max_w / img.shape[1]
+            img = cv2.resize(img, (max_w, int(round(img.shape[0] * s))), interpolation=cv2.INTER_AREA)
+        frames.append((fr.index, fr.t, img))
+        samples.append(track.interpolate(fr.t))
     cap.release()
+    if len(frames) < 2:
+        job.status = "error"
+        job.error = "Need at least two readable frames"
+        await emit(job, {"type": "error", "message": job.error})
+        return
 
-    colmap_info = None
-    if colmap_available() and poses_by_name:
-        await emit(
-            job,
-            {
-                "type": "status",
-                "message": "COLMAP SfM refinement — fusing sparse photogrammetry into the live model",
-                "progress": 86,
-            },
-        )
-        colmap_pts, colmap_info = reconstruct_aligned(
-            keyframe_dir,
-            job.artifact_dir / "colmap",
-            poses_by_name,  # type: ignore[arg-type]
-            o,
-            track.reliability,
-        )
-        if colmap_pts:
-            fused.extend(colmap_pts)
-            fused = voxel_downsample(fused, voxel=0.55)
-            last = list(poses_by_name.values())[-1]
-            await emit(
-                job,
-                {
-                    "type": "chunk",
-                    "index": n_win,
-                    "total": n_win + 1,
-                    "progress": 94,
-                    "source": "colmap",
-                    "pose": {
-                        "lat": last.lat,
-                        "lon": last.lon,
-                        "alt": last.alt,
-                        "heading": last.heading,
-                        "hdop": last.hdop,
-                    },
-                    "points": [_point_payload(p, o, 0.0) for p in colmap_pts[:600]],
-                    "stats": _stats(fused),
-                    "challenges": _challenge_state(
-                        blur_dropped=blur_dropped,
-                        sparse=False,
-                        gps_downweighted=gps_down,
-                        illumination=illum,
-                        dynamic=True,
-                        occlusions=True,
-                        near_rt=True,
-                        metric=True,
-                    ),
-                },
+    for i, sample in enumerate(samples):
+        await emit(job, {"type": "pose", "index": i, "pose": {"lat": sample.lat, "lon": sample.lon, "alt": sample.alt, "heading": sample.heading, "hdop": sample.hdop}})
+
+    pg = await run_photogrammetry(job, frames, samples, o, track.reliability, progress_base=8)
+    if pg.get("status") != "ok":
+        job.status = "error"
+        job.error = pg.get("reason", "photogrammetry failed")
+        await emit(job, {"type": "error", "message": job.error})
+        return
+    fused: list[ReconPoint] = list(pg["fused"])
+
+    status = vggt_status()
+    vggt_points = 0
+    if use_vggt:
+        chunk = max(2, int(os.environ.get("VGGT_CHUNK_FRAMES", "3")))
+        windows = [frames[i : i + chunk] for i in range(0, len(frames), max(chunk - 1, 1))]
+        windows = [w for w in windows if len(w) >= 2]
+        await emit(job, {
+            "type": "stage",
+            "stage": "vggt",
+            "label": "VGGT neural reconstruction",
+            "status": "running",
+            "progress": 91,
+            "stats": {"device": status.get("device"), "chunks": len(windows), "points": 0},
+        })
+        for wi, window in enumerate(windows):
+            poses = [samples[frames.index(f)] for f in window]
+            neural = await asyncio.to_thread(
+                vggt_reconstruct_chunk, [f[2] for f in window], poses, o, track.reliability
             )
-        elif colmap_info:
-            await emit(
-                job,
-                {
-                    "type": "status",
-                    "message": f"COLMAP skipped: {colmap_info.get('reason', 'unknown')}",
-                    "progress": 90,
-                },
-            )
+            if neural:
+                vggt_points += len(neural)
+                fused.extend(neural)
+                await emit(job, {
+                    "type": "dense",
+                    "source": "vggt",
+                    "progress": 91 + int(4 * (wi + 1) / max(len(windows), 1)),
+                    "points": [_point_payload(p, o, 0.0) for p in neural[:2500]],
+                    "count": vggt_points,
+                })
+        fused = voxel_downsample(fused, voxel=0.12)
+        await emit(job, {
+            "type": "stage",
+            "stage": "vggt",
+            "label": "VGGT neural reconstruction",
+            "status": "done" if vggt_points else "failed",
+            "progress": 95,
+            "stats": {"device": status.get("device"), "chunks": len(windows), "points": vggt_points},
+        })
+    else:
+        await emit(job, {
+            "type": "stage",
+            "stage": "vggt",
+            "label": "VGGT neural reconstruction",
+            "status": "skipped",
+            "progress": 91,
+            "stats": {"reason": status.get("reason") or "needs NVIDIA CUDA + vggt package", "cuda": status.get("cuda"), "package": status.get("package")},
+        })
 
     write_ply(job.artifact_dir / "cloud.ply", fused)
-    (job.artifact_dir / "cloud.json").write_text(
-        json.dumps({"points": [_point_payload(p, o, origin_alt) for p in fused]}),
-        encoding="utf-8",
-    )
-    mesh_info = mesh_from_points(fused, job.artifact_dir / "mesh.ply")
+    (job.artifact_dir / "cloud.json").write_text(json.dumps({"points": [_point_payload(p, o, 0.0) for p in fused[:50000]]}), encoding="utf-8")
     traj = [{"lat": s.lat, "lon": s.lon, "alt": s.alt} for s in track.samples]
-    (job.artifact_dir / "trajectory.geojson").write_text(
-        json.dumps(
-            {
-                "type": "Feature",
-                "geometry": {"type": "LineString", "coordinates": [[p["lon"], p["lat"], p["alt"]] for p in traj]},
-            }
-        ),
-        encoding="utf-8",
-    )
+    (job.artifact_dir / "trajectory.geojson").write_text(json.dumps({"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[p["lon"], p["lat"], p["alt"]] for p in traj]}}), encoding="utf-8")
+    challenges = _challenge_state(blur_dropped=blur_dropped, sparse=pg["dense_points"] < 2000, gps_downweighted=gps_down, illumination=illum, dynamic=True, occlusions=True, near_rt=True, metric=True)
     job.result = {
         "points": len(fused),
-        "mesh": mesh_info,
-        "colmap": colmap_info,
+        "sparse_points": pg["sparse_points"],
+        "dense_points": pg["dense_points"],
+        "vggt_points": vggt_points,
+        "cameras": pg["cameras"],
+        "mesh": pg["mesh"],
+        "mesh_json": pg["mesh_json"],
+        "bundle_adjustment": pg["ba"],
+        "gps_scale": pg["gps_scale"],
+        "gps_rmse_m": pg["gps_rmse_m"],
+        "focal_px": pg["focal_px"],
         "adapters": {"vggt": vggt_status(), "colmap": colmap_available()},
-        "mode": _recon_mode(),
+        "mode": mode,
         "telemetry_reliability": track.reliability,
-        "frames_kept": len(kept),
+        "frames_kept": len(frames),
         "origin": {"lat": o.lat, "lon": o.lon, "alt": origin_alt},
+        "challenges": challenges,
     }
+    await emit(job, {"type": "stats", "stats": _stats(fused), "challenges": challenges})
     job.status = "done"
-    await emit(
-        job,
-        {
-            "type": "done",
-            "progress": 100,
-            "message": "Upload reconstruction finished. Measure a known length if you have a reference.",
-            "result": job.result,
-        },
-    )
+    await emit(job, {"type": "done", "progress": 100, "message": f"Photogrammetry finished: {pg['cameras']} cameras, {pg['sparse_points']} sparse, {pg['dense_points']} dense points.", "result": job.result})
