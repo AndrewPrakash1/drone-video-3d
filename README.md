@@ -6,10 +6,11 @@ The dashboard reconstructs incrementally in Cesium, colors the cloud by confiden
 
 ## What runs here
 
-- **Proxy mission** (no upload): South Delhi synthetic flyby of a building whose north eave is **20.0 m**.
-- **Upload**: 1080p/4K clip + telemetry CSV. CPU reconstruction always runs. **VGGT** runs on CUDA when the official package is installed; **COLMAP** sparse points are fused into the live globe when `colmap` is on PATH.
+- **Proxy mission** (no upload): South Delhi synthetic flyby of a building whose north eave is **20.0 m**. It has no photographs, so it does not train a Gaussian splat.
+- **Upload**: 1080p/4K clip + telemetry CSV. CPU reconstruction always runs. **VGGT** runs on CUDA when the official package is installed; **COLMAP** sparse points are fused when `colmap` is on PATH. **Gaussian splatting** then trains on that GPS-aligned cloud when CUDA and `gsplat` are installed.
+- Viewport: **Points**, **Mesh**, and **Neural**. Neural loads `/jobs/{id}/splat.ply` after training. Measure still uses the metric cloud.
 - GPU laptop (RTX 5070 Ti): [docs/gpu-colmap.md](docs/gpu-colmap.md)
-- Export: georeferenced PLY (`/jobs/{id}/cloud.ply`).
+- Export: georeferenced cloud (`/jobs/{id}/cloud.ply`) and, after training, the neural splat (`/jobs/{id}/splat.ply`).
 
 ## Run locally
 
@@ -33,6 +34,16 @@ npm run dev -- --port 43123 --hostname 0.0.0.0
 
 Open http://127.0.0.1:43123 — **Run proxy mission**, then **Measure** the two violet eave markers. You should see ~20 m and PASS within 1 m / 5%.
 
+### Neural render (NVIDIA GPU)
+
+Gaussian training is a CUDA stage. Install the PyTorch CUDA wheel from [docs/gpu-colmap.md](docs/gpu-colmap.md), then:
+
+```bash
+pip install -r backend/requirements-splat.txt
+```
+
+Upload a real clip. The photogrammetry card shows **Gaussian splatting** for about 7k steps. When it finishes, switch the viewport to **Neural**. Each Gaussian starts on the metric cloud in east-north-up metres, and a scale penalty keeps the building from resizing, so the 20 m check and the splat stay in the same frame. Without CUDA or `gsplat`, that stage is skipped and Points / Mesh stay available.
+
 ### Telemetry CSV
 
 ```
@@ -44,10 +55,10 @@ timestamp,lat,lon,alt,heading,speed,hdop,rtk
 
 ## Architecture
 
-Hybrid reconstruction: intelligent frame selection → GPS-weighted poses → VGGT chunks (if CUDA) or CPU geometry → COLMAP sparse fusion (if installed) → Open3D mesh → confidence + metric report → Cesium.
+Hybrid reconstruction: intelligent frame selection → GPS-weighted poses → VGGT chunks (if CUDA) or CPU geometry → COLMAP sparse fusion (if installed) → Open3D mesh → 3D Gaussian training in the same ENU frame (if CUDA and gsplat) → Three.js viewport.
 
 See [docs/sih26158.md](docs/sih26158.md) for the official eight challenges and adapter notes.
 
 ## Hardware
 
-A field box with an RTX-class GPU (e.g. 5070 Ti laptop) should follow [docs/gpu-colmap.md](docs/gpu-colmap.md). The AMD Radeon 610M iGPU is ignored. This prototype still runs on CPU without those extras.
+A field box with an RTX-class GPU (e.g. 5070 Ti laptop) should follow [docs/gpu-colmap.md](docs/gpu-colmap.md). Gaussian training uses that NVIDIA GPU through CUDA; an Apple GPU or the AMD Radeon 610M cannot run this stage. Reconstruction still finishes on CPU, and Neural turns on once `splat.ply` exists.
