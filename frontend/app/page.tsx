@@ -35,7 +35,7 @@ import {
   type Reference,
 } from "@/lib/api";
 import type { ColorMode } from "@/components/cesium-globe";
-import { ReconViewport, type MeshPayload, type ReconCamera } from "@/components/recon-viewport";
+import { ReconViewport, type MeshPayload, type ReconCamera, type ViewMode } from "@/components/recon-viewport";
 
 type AdapterState = {
   vggt: boolean | { available?: boolean; cuda?: boolean; package?: boolean; device?: string | null; reason?: string | null };
@@ -139,6 +139,10 @@ export default function MissionPage() {
   const [cameras, setCameras] = useState<ReconCamera[]>([]);
   const [stages, setStages] = useState<Record<string, StageView>>({});
   const [mesh, setMesh] = useState<MeshPayload | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("points");
+  const [splatUrl, setSplatUrl] = useState<string | null>(null);
+  const [splatNote, setSplatNote] = useState<string | null>(null);
+  const [splatHealth, setSplatHealth] = useState<{ available?: boolean; reason?: string | null; device?: string | null } | null>(null);
   const pointsReceivedRef = useRef(0);
 
   const snapshotSetters = useMemo(
@@ -171,6 +175,7 @@ export default function MissionPage() {
         if (h?.vggt || h?.colmap != null) {
           setAdapters({ vggt: (h.vggt as AdapterState["vggt"]) ?? false, colmap: Boolean(h.colmap) });
         }
+        if (h?.splat) setSplatHealth(h.splat);
       })
       .catch(() => {
         setApiOk(false);
@@ -182,6 +187,19 @@ export default function MissionPage() {
     fetchReference().then(setReference).catch(() => undefined);
     refreshHealth();
   }, [refreshHealth]);
+
+  useEffect(() => {
+    if (splatUrl) setViewMode("neural");
+  }, [splatUrl]);
+
+  const adoptSplat = useCallback((result: { splat?: { status?: string; reason?: string } } | null | undefined) => {
+    if (result?.splat?.status === "ok" && jobId) {
+      setSplatUrl(apiUrl(`/jobs/${jobId}/splat.ply`));
+      setSplatNote(null);
+    } else if (result?.splat?.reason) {
+      setSplatNote(String(result.splat.reason));
+    }
+  }, [jobId]);
 
   const onPick = useCallback((pt: GeoPoint) => {
     setPicks((prev) => {
@@ -207,7 +225,7 @@ export default function MissionPage() {
       if (data.type === "end") return;
       if (data.type === "status") {
         setMessage(String(data.message || ""));
-        setProgress(Number(data.progress ?? 8));
+        if (data.progress != null) setProgress(Number(data.progress));
       }
       if (data.type === "meta") {
         const meta = data as {
@@ -227,7 +245,7 @@ export default function MissionPage() {
         const stage = data as StageView;
         setStages((prev) => ({ ...prev, [stage.stage]: stage }));
         setMessage(`${stage.label} — ${stage.status}`);
-        setProgress(Number(data.progress ?? progress));
+        if (data.progress != null) setProgress(Number(data.progress));
       }
       if (data.type === "pose" && data.pose) {
         setPose(data.pose as Pose);
@@ -246,17 +264,29 @@ export default function MissionPage() {
         if (data.stats) setStats(data.stats as typeof stats);
         if (data.challenges) setChallenges(data.challenges as Challenge[]);
         if (data.cameras) setCameras(data.cameras as ReconCamera[]);
-        setProgress(Number(data.progress ?? progress));
+        if (data.progress != null) setProgress(Number(data.progress));
         if (data.type === "sparse") setMessage(`Sparse cloud · ${data.count ?? ""} points`);
         else if (data.type === "dense") setMessage(`Dense cloud · ${data.count ?? ""} points`);
         else setMessage(`Chunk ${Number(data.index) + 1}/${data.total} fused (${data.source || "geo"})`);
+      }
+      if (data.type === "splat") {
+        if (data.status === "ok") {
+          setSplatUrl(apiUrl(`/jobs/${jobId}/splat.ply`));
+          setSplatNote(null);
+        } else if (data.reason) {
+          setSplatNote(String(data.reason));
+        }
       }
       if (data.type === "done") {
         setState("done");
         setProgress(100);
         setMessage(String(data.message || "Reconstruction complete"));
-        const result = data.result as { metric?: MeasureResult } | undefined;
+        const result = data.result as { metric?: MeasureResult; splat?: { status?: string; reason?: string } } | undefined;
         if (result?.metric) setMetric(result.metric);
+        adoptSplat(result);
+        fetchJobSnapshot(jobId)
+          .then((snap) => applySnapshot(snap, snapshotSetters))
+          .catch(() => undefined);
         fetch(apiUrl(`/jobs/${jobId}/mesh.json`))
           .then((r) => (r.ok ? r.json() : null))
           .then((m) => { if (m?.positions) setMesh(m as MeshPayload); })
@@ -291,6 +321,7 @@ export default function MissionPage() {
         const snap = await fetchJobSnapshot(jobId);
         if (snap.status === "done" || snap.status === "error") {
           applySnapshot(snap, snapshotSetters);
+          adoptSplat(snap.result);
           window.clearInterval(poll);
           es.close();
           return;
@@ -307,7 +338,7 @@ export default function MissionPage() {
       window.clearInterval(poll);
       es.close();
     };
-  }, [jobId, progress, snapshotSetters]);
+  }, [jobId, snapshotSetters, adoptSplat]);
 
   async function onDemo() {
     setError(null);
@@ -315,6 +346,9 @@ export default function MissionPage() {
     setCameras([]);
     setStages({});
     setMesh(null);
+    setViewMode("points");
+    setSplatUrl(null);
+    setSplatNote(null);
     setTrajectory([]);
     setPicks([]);
     setMetric(null);
@@ -337,6 +371,9 @@ export default function MissionPage() {
     setCameras([]);
     setStages({});
     setMesh(null);
+    setViewMode("points");
+    setSplatUrl(null);
+    setSplatNote(null);
     setTrajectory([]);
     setPicks([]);
     setMetric(null);
@@ -363,6 +400,9 @@ export default function MissionPage() {
     setCameras([]);
     setStages({});
     setMesh(null);
+    setViewMode("points");
+    setSplatUrl(null);
+    setSplatNote(null);
     setTrajectory([]);
     setPicks([]);
     setMetric(null);
@@ -423,7 +463,14 @@ export default function MissionPage() {
       <main className="grid flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_340px]">
         <section className="flex min-h-[520px] flex-col gap-3">
           <div className="relative min-h-[480px] flex-1">
-            <ReconViewport points={points} cameras={cameras} mesh={mesh} />
+            <ReconViewport
+              points={points}
+              cameras={cameras}
+              mesh={mesh}
+              viewMode={viewMode}
+              splatUrl={splatUrl}
+              onSplatError={(message) => setSplatNote(message)}
+            />
             {showEmptyHint ? (
               <div className="pointer-events-none absolute bottom-3 left-3 right-3 flex justify-center">
                 <div className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-xl border border-white/10 bg-black/70 px-4 py-3 shadow-xl">
@@ -431,20 +478,38 @@ export default function MissionPage() {
                   <p className="text-sm text-slate-200">
                     GPU viewport. Run the real DJI flight to reconstruct a point cloud, camera frustums, and Poisson mesh.
                   </p>
-                  <Button onClick={onBrighton} disabled={state === "running"} className="shrink-0">
+                  <Button onClick={onBrighton} className="shrink-0">
                     Start flight
                   </Button>
                 </div>
               </div>
             ) : null}
-            {state === "running" && points.length === 0 ? (
-              <div className="pointer-events-none absolute left-3 top-3 rounded-md bg-black/70 px-3 py-1.5 text-xs text-cyan-100">
-                Reconstructing… points will appear in a few seconds
+            {state === "running" ? (
+              <div className="pointer-events-none absolute left-3 top-3 max-w-md rounded-md bg-black/70 px-3 py-1.5 text-xs text-cyan-100">
+                {message || "Reconstructing…"}
+              </div>
+            ) : null}
+            {points.length > 0 ? (
+              <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/70 px-3 py-1.5 text-xs text-slate-200">
+                {points.length.toLocaleString()} points · drag to orbit
               </div>
             ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-slate-400">Color</span>
+            <span className="text-xs text-slate-400">View</span>
+            {(["points", "mesh", "neural"] as ViewMode[]).map((mode) => (
+              <Button
+                key={mode}
+                size="sm"
+                variant={viewMode === mode ? "default" : "outline"}
+                disabled={mode === "neural" && !splatUrl}
+                title={mode === "neural" && !splatUrl ? splatNote || "Trains after an upload when CUDA and gsplat are installed" : undefined}
+                onClick={() => setViewMode(mode)}
+              >
+                {mode === "neural" ? "Neural" : mode === "mesh" ? "Mesh" : "Points"}
+              </Button>
+            ))}
+            <span className="ml-2 text-xs text-slate-400">Color</span>
             {(["confidence", "rgb", "height"] as ColorMode[]).map((m) => (
               <Button key={m} size="sm" variant={colorMode === m ? "default" : "outline"} onClick={() => setColorMode(m)}>
                 {m}
@@ -486,7 +551,7 @@ export default function MissionPage() {
                 </Button>
               </div>
               <p className="text-[11px] text-slate-500">
-                API: {apiBase}. CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}.
+                API: {apiBase}. CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}. Gaussian {splatHealth?.available ? `ready${splatHealth.device ? ` on ${splatHealth.device}` : ""}` : splatHealth?.reason || "install CUDA gsplat to train the neural view"}.
               </p>
             </CardContent>
           </Card>
@@ -563,6 +628,7 @@ export default function MissionPage() {
                 ["mvs", "Dense multi-view stereo"],
                 ["mesh", "Poisson surface"],
                 ["vggt", "VGGT neural (GPU)"],
+                ["splat", "Gaussian splatting"],
               ] as const).map(([id, fallback]) => {
                 const stage = stages[id];
                 return (
@@ -572,7 +638,7 @@ export default function MissionPage() {
                       {stage?.stats ? (
                         <div className="text-slate-500">
                           {Object.entries(stage.stats)
-                            .filter(([k, v]) => ["keypoints", "ransac_inliers", "outliers_removed", "cameras", "points", "dense_points", "rmse_after_px", "method", "triangles", "chunks", "device", "reason"].includes(k) && v != null)
+                            .filter(([k, v]) => ["keypoints", "ransac_inliers", "outliers_removed", "cameras", "points", "dense_points", "rmse_after_px", "method", "triangles", "chunks", "device", "reason", "gaussians", "steps", "loss", "undistorted"].includes(k) && v != null)
                             .map(([k, v]) => `${k} ${v}`)
                             .join(" · ")}
                         </div>
@@ -633,6 +699,11 @@ export default function MissionPage() {
           {jobId && state === "done" ? (
             <a href={apiUrl(`/jobs/${jobId}/cloud.ply`)} className={buttonVariants({ variant: "outline" })}>
               <Download /> Download PLY
+            </a>
+          ) : null}
+          {splatUrl ? (
+            <a href={splatUrl} className={buttonVariants({ variant: "outline" })}>
+              <Download /> Download neural PLY
             </a>
           ) : null}
         </aside>

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from .adapters.colmap import colmap_available
 from .adapters.vggt import vggt_available, vggt_status
+from .splats.train import splat_status
 from .demo_scene import write_demo_files
 from .geo import Origin, geodetic_to_enu, make_origin
 from .jobs import create_job, get_job, job_snapshot, sse_stream
@@ -39,6 +40,7 @@ def health() -> dict:
         "ok": True,
         "vggt": vggt_status(),
         "colmap": colmap_available(),
+        "splat": splat_status(),
     }
 
 
@@ -153,6 +155,17 @@ def job_mesh_json(jid: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(404, "mesh not ready")
     return FileResponse(path, media_type="application/json")
+
+
+@app.get("/jobs/{jid}/splat.ply")
+def job_splat(jid: str) -> FileResponse:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    path = job.artifact_dir / "splat.ply"
+    if not path.exists():
+        raise HTTPException(404, "splat not ready")
+    return FileResponse(path, filename="splat.ply", media_type="application/octet-stream")
 
 
 @app.get("/jobs/{jid}/mesh.ply")

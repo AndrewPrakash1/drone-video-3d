@@ -15,6 +15,7 @@ from ..jobs import Job, emit
 from ..mesh import mesh_from_points, write_ply
 from ..reconstruct import ReconPoint, voxel_downsample
 from ..telemetry import TelemetrySample
+from ..splats.export import export_gaussian_dataset
 from .features import build_tracks, candidate_pairs, extract_features, match_pair
 from .mvs import dense_reconstruct
 from .sfm import align_to_gps, initial_intrinsics, run_sfm
@@ -30,7 +31,11 @@ STAGES = [
 
 
 def _stage(key: str, status: str, progress: int, **stats) -> dict:
-    return {"type": "stage", "stage": key, "label": dict(STAGES)[key], "status": status, "progress": progress, "stats": stats}
+    return {"type": "stage", "stage": key, "label": dict(STAGES)[key], "status": status, "progress": progress, "stats": _safe_stats(stats)}
+
+
+def _safe_stats(stats: dict) -> dict:
+    return {k: v for k, v in stats.items() if k not in {"status", "progress", "type", "stage", "label"}}
 
 
 def _payload(pts, rgb, conf, origin: Origin, limit: int = 4000) -> list[dict]:
@@ -107,7 +112,7 @@ async def run_photogrammetry(job: Job, frames, samples: list[TelemetrySample], o
     result = align_to_gps(sfm.result(), {i: gps[i] for i in range(n)})
     ba = result.ba_history[-1] if result.ba_history else {}
     await emit(job, _stage("sfm", "done", progress_base + 40, cameras=len(result.cameras), points=int(len(result.points)), mean_reproj_px=round(float(result.errors.mean()), 3) if len(result.errors) else None, gps_scale=round(result.gps_scale, 4), gps_rmse_m=None if result.gps_rmse_m is None else round(result.gps_rmse_m, 2)))
-    await emit(job, _stage("ba", "done", progress_base + 42, **{k: v for k, v in ba.items()}))
+    await emit(job, _stage("ba", "done", progress_base + 42, **_safe_stats(ba)))
 
     sparse_conf = np.array([
         point_confidence(len(o), min(a / 12.0, 1.0), 0.8, gps_reliability, e)
@@ -144,7 +149,11 @@ async def run_photogrammetry(job: Job, frames, samples: list[TelemetrySample], o
     mesh_info = await asyncio.to_thread(mesh_from_points, fused, job.artifact_dir / "mesh.ply")
     mesh_json = _mesh_json(job.artifact_dir / "mesh.ply", job.artifact_dir / "mesh.json")
     (job.artifact_dir / "cameras.json").write_text(json.dumps(cameras), encoding="utf-8")
-    await emit(job, _stage("mesh", "done" if mesh_info.get("status") == "ok" else "failed", progress_base + 90, **{k: v for k, v in mesh_info.items() if k != "path"}))
+    try:
+        gs_export = export_gaussian_dataset(job.artifact_dir / "gs", frames, result)
+    except Exception as exc:
+        gs_export = {"status": "skipped", "reason": str(exc), "frames": 0}
+    await emit(job, _stage("mesh", "done" if mesh_info.get("status") == "ok" else "failed", progress_base + 90, **_safe_stats({k: v for k, v in mesh_info.items() if k != "path"})))
     return {
         "status": "ok",
         "cameras": len(result.cameras),
@@ -158,6 +167,8 @@ async def run_photogrammetry(job: Job, frames, samples: list[TelemetrySample], o
         "focal_px": float(result.k[0, 0]),
         "fused": fused,
         "cameras_payload": cameras,
+        "gs_dir": gs_export.get("dir"),
+        "gs_frames": gs_export.get("frames", 0),
     }
 
 

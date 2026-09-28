@@ -102,10 +102,15 @@ export type JobSnapshot = {
   challenges?: Challenge[];
   cameras?: { e: number; n: number; u: number; rotation: number[]; fx: number; width: number; height: number }[];
   stages?: Record<string, { stage: string; label: string; status: string; stats?: Record<string, unknown> }>;
-  result?: { metric?: MeasureResult };
+  result?: { metric?: MeasureResult; splat?: { status?: string; reason?: string; gaussians?: number } };
 };
 
-export async function checkHealth(): Promise<{ ok: boolean; vggt?: unknown; colmap?: boolean }> {
+export async function checkHealth(): Promise<{
+  ok: boolean;
+  vggt?: unknown;
+  colmap?: boolean;
+  splat?: { available?: boolean; reason?: string | null; device?: string | null };
+}> {
   const res = await apiFetch("/health", { cache: "no-store" });
   if (!res.ok) throw new Error(`API unreachable (${res.status})`);
   return res.json();

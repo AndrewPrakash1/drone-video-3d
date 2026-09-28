@@ -1,0 +1,3 @@
+# Optional neural render. Install on the NVIDIA machine after the CUDA torch
+# wheel from docs/gpu-colmap.md. Do not pip-install a second torch from here.
+gsplat>=1.4.0

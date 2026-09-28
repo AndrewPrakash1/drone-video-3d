@@ -30,6 +30,7 @@ from .mesh import mesh_from_points, write_ply
 from .metric import evaluate_segment
 from .photogrammetry.run import run_photogrammetry
 from .reconstruct import ReconPoint, triangulate_pair, voxel_downsample
+from .splats.train import splat_status, train_splats
 from .telemetry import TelemetryTrack, parse_telemetry_csv
 
 
@@ -275,7 +276,13 @@ async def run_upload(job: Job, video_path: Path, telemetry_text: str) -> None:
     for i, sample in enumerate(samples):
         await emit(job, {"type": "pose", "index": i, "pose": {"lat": sample.lat, "lon": sample.lon, "alt": sample.alt, "heading": sample.heading, "hdop": sample.hdop}})
 
-    pg = await run_photogrammetry(job, frames, samples, o, track.reliability, progress_base=8)
+    try:
+        pg = await run_photogrammetry(job, frames, samples, o, track.reliability, progress_base=8)
+    except Exception as exc:
+        job.status = "error"
+        job.error = str(exc)
+        await emit(job, {"type": "error", "message": str(exc)})
+        return
     if pg.get("status") != "ok":
         job.status = "error"
         job.error = pg.get("reason", "photogrammetry failed")
@@ -333,6 +340,7 @@ async def run_upload(job: Job, video_path: Path, telemetry_text: str) -> None:
 
     write_ply(job.artifact_dir / "cloud.ply", fused)
     (job.artifact_dir / "cloud.json").write_text(json.dumps({"points": [_point_payload(p, o, 0.0) for p in fused[:50000]]}), encoding="utf-8")
+    splat_info = await _run_splats(job, pg.get("gs_dir"), fused)
     traj = [{"lat": s.lat, "lon": s.lon, "alt": s.alt} for s in track.samples]
     (job.artifact_dir / "trajectory.geojson").write_text(json.dumps({"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[p["lon"], p["lat"], p["alt"]] for p in traj]}}), encoding="utf-8")
     challenges = _challenge_state(blur_dropped=blur_dropped, sparse=pg["dense_points"] < 2000, gps_downweighted=gps_down, illumination=illum, dynamic=True, occlusions=True, near_rt=True, metric=True)
@@ -354,7 +362,47 @@ async def run_upload(job: Job, video_path: Path, telemetry_text: str) -> None:
         "frames_kept": len(frames),
         "origin": {"lat": o.lat, "lon": o.lon, "alt": origin_alt},
         "challenges": challenges,
+        "splat": {k: v for k, v in splat_info.items() if k != "path"},
     }
     await emit(job, {"type": "stats", "stats": _stats(fused), "challenges": challenges})
     job.status = "done"
-    await emit(job, {"type": "done", "progress": 100, "message": f"Photogrammetry finished: {pg['cameras']} cameras, {pg['sparse_points']} sparse, {pg['dense_points']} dense points.", "result": job.result})
+    neural = ""
+    if splat_info.get("status") == "ok":
+        neural = f" Neural render ready ({splat_info.get('gaussians', 0)} Gaussians)."
+    await emit(job, {"type": "done", "progress": 100, "message": f"Photogrammetry finished: {pg['cameras']} cameras, {pg['sparse_points']} sparse, {pg['dense_points']} dense points.{neural}", "result": job.result})
+
+
+def _splat_event(status: str, progress: int, **stats) -> dict:
+    return {
+        "type": "stage",
+        "stage": "splat",
+        "label": "Gaussian splatting",
+        "status": status,
+        "progress": progress,
+        "stats": {k: v for k, v in stats.items() if v is not None and k != "path"},
+    }
+
+
+async def _run_splats(job: Job, gs_dir: str | None, points: list[ReconPoint]) -> dict:
+    """Train the appearance layer after the metric cloud is final. Never fails the job."""
+    status = splat_status()
+    dataset = Path(gs_dir) if gs_dir else None
+    if dataset is None or not (dataset / "cameras.json").exists():
+        info = {"status": "skipped", "reason": "no posed frames"}
+    elif not status["available"]:
+        info = {"status": "skipped", "reason": status.get("reason") or "CUDA gsplat unavailable", "cuda": status.get("cuda"), "package": status.get("package"), "device": status.get("device")}
+    else:
+        await emit(job, _splat_event("running", 96, device=status.get("device"), frames=0))
+        loop = asyncio.get_running_loop()
+
+        def on_step(step: int, total: int, loss: float) -> None:
+            asyncio.run_coroutine_threadsafe(
+                emit(job, _splat_event("running", 96 + int(3 * step / max(total, 1)), step=step, steps=total, loss=round(loss, 4), device=status.get("device"))),
+                loop,
+            )
+
+        info = await asyncio.to_thread(train_splats, dataset, points, job.artifact_dir / "splat.ply", on_step)
+    final = "done" if info.get("status") == "ok" else str(info.get("status") or "failed")
+    await emit(job, _splat_event(final, 99, **info))
+    await emit(job, {"type": "splat", "status": info.get("status"), "reason": info.get("reason"), "gaussians": info.get("gaussians")})
+    return info

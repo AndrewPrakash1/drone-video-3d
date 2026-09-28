@@ -149,11 +149,17 @@ Open http://127.0.0.1:43123 → upload a single-pass clip + CSV → watch VGGT c
 
 ---
 
-## 4. What still is not neural
+## 4. Optional Gaussian render
 
-Cesium **viewing** is rasterization on whatever GPU the browser uses (the 5070 Ti if the browser is set to high performance). That is not VGGT.
+The metric model is still the GPS-aligned cloud. After an upload, OnePass can train a short 3D Gaussian appearance layer on those same metres and serve `splat.ply` to the viewport's Neural mode.
 
-We still do **not** use NeRF or 3D Gaussian Splatting as the metric model.
+This needs the CUDA torch wheel from section 1, then:
+
+```bash
+pip install -r backend/requirements-splat.txt
+```
+
+CPU-only runs skip the stage and keep the point cloud and Poisson mesh. The proxy mission has no photographs, so it never trains Gaussians. Length checks stay on the Cesium / GPS cloud.
 
 ---
 
