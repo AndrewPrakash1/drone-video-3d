@@ -128,11 +128,34 @@ export async function startDemo(): Promise<{ id: string }> {
   return res.json();
 }
 
+/** Large multipart uploads bypass Next /api rewrites (10MB default buffer). */
+async function postMultipartDirect(path: string, body: FormData): Promise<Response> {
+  const bases = [
+    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, ""),
+    "http://127.0.0.1:8765",
+    "http://localhost:8765",
+  ].filter((v): v is string => Boolean(v));
+  let lastError: unknown;
+  for (const base of bases) {
+    try {
+      const res = await fetch(`${base}${path}`, { method: "POST", body });
+      if (res.ok) {
+        resolvedBase = base;
+        return res;
+      }
+      if (res.status >= 400 && res.status < 500) return res;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("API unreachable. Start uvicorn on port 8765.");
+}
+
 export async function startUpload(video: File, telemetry: File): Promise<{ id: string }> {
   const body = new FormData();
   body.append("video", video);
   body.append("telemetry", telemetry);
-  const res = await apiFetch("/jobs", { method: "POST", body });
+  const res = await postMultipartDirect("/jobs", body);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
