@@ -12,7 +12,7 @@ import numpy as np
 from ..confidence import classify, point_confidence
 from ..geo import Origin, enu_to_geodetic, geodetic_to_enu
 from ..jobs import Job, emit
-from ..mesh import mesh_from_points, write_ply
+from ..mesh import clean_cloud, mesh_from_points, write_ply
 from ..reconstruct import ReconPoint, voxel_downsample
 from ..telemetry import TelemetrySample
 from ..splats.export import export_gaussian_dataset
@@ -26,7 +26,7 @@ STAGES = [
     ("sfm", "Sparse SfM triangulation"),
     ("ba", "Bundle adjustment"),
     ("mvs", "Dense multi-view stereo"),
-    ("mesh", "Poisson surface"),
+    ("mesh", "Surface mesh"),
 ]
 
 
@@ -50,6 +50,10 @@ def _payload(pts, rgb, conf, origin: Origin, limit: int = 4000) -> list[dict]:
             "e": float(p[0]), "n": float(p[1]), "u": float(p[2]),
             "r": int(c[0]), "g": int(c[1]), "b": int(c[2]),
             "conf": float(cf), "band": classify(float(cf)),
+            "source": "photogrammetry",
+            "provenance": ["mvs"],
+            "uncertainty_m": max(0.05, min(20.0, 1.0 / max(float(cf), 0.05))),
+            "synthetic": False,
         })
     return out
 
@@ -69,6 +73,31 @@ def _cameras(result, size, origin, samples) -> list[dict]:
             "gps": None if i >= len(samples) else {"lat": samples[i].lat, "lon": samples[i].lon, "alt": samples[i].alt},
         })
     return rows
+
+
+def _trim_to_flight(result):
+    """Drop triangulations that sit far beside the flight. Tiny parallax still passes the reprojection test and stretches the cloud for kilometres."""
+    centers = [c.center for c in result.cameras.values()]
+    if len(result.points) == 0 or not centers:
+        return result, 0
+    cams = np.asarray(centers, dtype=np.float64)
+    if not np.isfinite(cams).all():
+        return result, 0
+    pts = result.points
+    horiz = np.hypot(pts[:, None, 0] - cams[None, :, 0], pts[:, None, 1] - cams[None, :, 1]).min(1)
+    flight = float(np.ptp(cams[:, :2], axis=0).max())
+    alt = float(np.median(cams[:, 2]) - np.median(pts[:, 2]))
+    limit = max(flight * 1.5, abs(alt) * 3.0, 50.0)
+    keep = horiz <= limit
+    if int(keep.sum()) < 50 or float(keep.mean()) > 0.98:
+        return result, 0
+    idx = np.flatnonzero(keep)
+    result.points = pts[idx]
+    result.colors = result.colors[idx]
+    result.errors = result.errors[idx]
+    result.triangulation_angles = result.triangulation_angles[idx]
+    result.observations = [result.observations[i] for i in idx.tolist()]
+    return result, int((~keep).sum())
 
 
 async def run_photogrammetry(job: Job, frames, samples: list[TelemetrySample], origin: Origin, gps_reliability: float, progress_base: int = 8) -> dict:
@@ -110,8 +139,9 @@ async def run_photogrammetry(job: Job, frames, samples: list[TelemetrySample], o
         await emit(job, _stage("sfm", "failed", progress_base + 40, reason="no pair with enough parallax"))
         return {"status": "failed", "reason": "sfm initialisation failed"}
     result = align_to_gps(sfm.result(), {i: gps[i] for i in range(n)})
+    result, far_removed = _trim_to_flight(result)
     ba = result.ba_history[-1] if result.ba_history else {}
-    await emit(job, _stage("sfm", "done", progress_base + 40, cameras=len(result.cameras), points=int(len(result.points)), mean_reproj_px=round(float(result.errors.mean()), 3) if len(result.errors) else None, gps_scale=round(result.gps_scale, 4), gps_rmse_m=None if result.gps_rmse_m is None else round(result.gps_rmse_m, 2)))
+    await emit(job, _stage("sfm", "done", progress_base + 40, cameras=len(result.cameras), points=int(len(result.points)), far_points_removed=far_removed, mean_reproj_px=round(float(result.errors.mean()), 3) if len(result.errors) else None, gps_scale=round(result.gps_scale, 4), gps_rmse_m=None if result.gps_rmse_m is None else round(result.gps_rmse_m, 2)))
     await emit(job, _stage("ba", "done", progress_base + 42, **_safe_stats(ba)))
 
     sparse_conf = np.array([
@@ -141,13 +171,21 @@ async def run_photogrammetry(job: Job, frames, samples: list[TelemetrySample], o
     await emit(job, _stage("mesh", "running", progress_base + 82))
     fused: list[ReconPoint] = []
     for p, c, cf in zip(result.points, result.colors, sparse_conf):
-        fused.append(ReconPoint(float(p[0]), float(p[1]), float(p[2]), int(c[0]), int(c[1]), int(c[2]), float(cf), 2))
+        fused.append(ReconPoint(
+            float(p[0]), float(p[1]), float(p[2]), int(c[0]), int(c[1]), int(c[2]), float(cf), 2,
+            source="photogrammetry", provenance=("sfm",), uncertainty_m=max(0.05, min(20.0, 1.0 / max(float(cf), 0.05))),
+        ))
     for p, c, cf, v in zip(dense.xyz, dense.rgb, dense_conf, dense.views):
-        fused.append(ReconPoint(float(p[0]), float(p[1]), float(p[2]), int(c[0]), int(c[1]), int(c[2]), float(cf), int(v)))
+        fused.append(ReconPoint(
+            float(p[0]), float(p[1]), float(p[2]), int(c[0]), int(c[1]), int(c[2]), float(cf), int(v),
+            source="photogrammetry", provenance=("mvs",), uncertainty_m=max(0.05, min(20.0, 1.0 / max(float(cf), 0.05))),
+        ))
     fused = voxel_downsample(fused, voxel=0.15 if len(fused) > 40000 else 0.08)
     write_ply(job.artifact_dir / "cloud.ply", fused)
+    eyes = np.array([[c["e"], c["n"], c["u"]] for c in cameras], dtype=np.float64)
+    fused = await asyncio.to_thread(clean_cloud, fused, eyes if len(eyes) else None)
     mesh_info = await asyncio.to_thread(mesh_from_points, fused, job.artifact_dir / "mesh.ply")
-    mesh_json = _mesh_json(job.artifact_dir / "mesh.ply", job.artifact_dir / "mesh.json")
+    mesh_json = mesh_json_file(job.artifact_dir / "mesh.ply", job.artifact_dir / "mesh.json", fused)
     (job.artifact_dir / "cameras.json").write_text(json.dumps(cameras), encoding="utf-8")
     try:
         gs_export = export_gaussian_dataset(job.artifact_dir / "gs", frames, result)
@@ -172,7 +210,7 @@ async def run_photogrammetry(job: Job, frames, samples: list[TelemetrySample], o
     }
 
 
-def _mesh_json(ply: Path, out: Path) -> dict | None:
+def mesh_json_file(ply: Path, out: Path, points: list[ReconPoint] | None = None) -> dict | None:
     if not ply.exists():
         return None
     try:
@@ -185,9 +223,36 @@ def _mesh_json(ply: Path, out: Path) -> dict | None:
         v, f, c = _ascii_ply(ply)
     if len(v) == 0 or len(f) == 0:
         return None
-    if len(f) > 80000:
-        f = f[:80000]
-    out.write_text(json.dumps({"positions": np.round(v, 3).ravel().tolist(), "colors": c.ravel().tolist(), "indices": f.ravel().tolist()}), encoding="utf-8")
+    if len(f) > 250000:
+        f = f[np.random.default_rng(0).choice(len(f), 250000, replace=False)]
+    vertex_confidence = np.ones(len(v), dtype=np.float32)
+    vertex_source = ["photogrammetry"] * len(v)
+    vertex_state = ["observed"] * len(v)
+    if points:
+        from scipy.spatial import cKDTree
+
+        xyz = np.asarray([(p.e, p.n, p.u) for p in points], dtype=np.float64)
+        if len(xyz):
+            nearest = cKDTree(xyz).query(np.asarray(v, dtype=np.float64), k=1)[1]
+            vertex_confidence = np.asarray([points[int(i)].conf for i in nearest], dtype=np.float32)
+            vertex_source = [points[int(i)].source for i in nearest]
+            vertex_state = ["generated" if points[int(i)].synthetic else "observed" for i in nearest]
+    face_confidence = vertex_confidence[f].mean(axis=1) if len(f) else np.zeros(0, dtype=np.float32)
+    face_source = [vertex_source[int(i)] for i in f[:, 0]] if len(f) else []
+    face_state = ["generated" if any(vertex_state[int(i)] == "generated" for i in face) else "observed" for face in f]
+    payload = {
+        "positions": np.round(v, 3).ravel().tolist(),
+        "colors": c.ravel().tolist(),
+        "indices": f.ravel().tolist(),
+        "vertex_confidence": np.round(vertex_confidence, 4).tolist(),
+        "vertex_source": vertex_source,
+        "vertex_state": vertex_state,
+        "face_confidence": np.round(face_confidence, 4).tolist(),
+        "face_source": face_source,
+        "face_state": face_state,
+        "measurement_safe": [False for _ in face_state],
+    }
+    out.write_text(json.dumps(payload), encoding="utf-8")
     return {"vertices": int(len(v)), "triangles": int(len(f))}
 
 

@@ -47,8 +47,8 @@ def building_corners_geodetic() -> dict:
     return {
         "name": "north_rooftop_eave",
         "true_length_m": ROOFTOP_LEN,
-        "a": {"lat": a[0], "lon": a[1], "height": ORIGIN_ALT + a[2]},
-        "b": {"lat": b[0], "lon": b[1], "height": ORIGIN_ALT + b[2]},
+        "a": {"lat": a[0], "lon": a[1], "height": float(a[2])},
+        "b": {"lat": b[0], "lon": b[1], "height": float(b[2])},
         "a_enu": [-10.0, 8.0, ROOFTOP_HEIGHT],
         "b_enu": [10.0, 8.0, ROOFTOP_HEIGHT],
         "tolerance_m": 1.0,
@@ -92,7 +92,7 @@ def _box_points(rng: np.random.Generator) -> list[ReconPoint]:
         n = rng.uniform(2.0, 14.0)
         u = ROOFTOP_HEIGHT + rng.normal(0, 0.08)
         conf = point_confidence(8, 0.85, 0.9, 0.82, 0.3)
-        pts.append(ReconPoint(e, n, u, 186, 168, 148, conf, 8))
+        pts.append(ReconPoint(e, n, u, 186, 168, 148, conf, 8, source="proxy", provenance=("proxy_scene",), synthetic=True))
     # Facades (medium — limited viewing angles on a single pass)
     for _ in range(260):
         side = rng.integers(0, 4)
@@ -106,7 +106,7 @@ def _box_points(rng: np.random.Generator) -> list[ReconPoint]:
             e, n = 10.0 + rng.normal(0, 0.05), rng.uniform(2, 14)
         u = rng.uniform(0.2, ROOFTOP_HEIGHT)
         conf = point_confidence(3, 0.35, 0.7, 0.82, 1.4)
-        pts.append(ReconPoint(e, n, u, 164, 142, 122, conf, 3))
+        pts.append(ReconPoint(e, n, u, 164, 142, 122, conf, 3, source="proxy", provenance=("proxy_scene",), synthetic=True))
     return pts
 
 
@@ -125,7 +125,7 @@ def _terrain_points(rng: np.random.Generator) -> list[ReconPoint]:
         conf = point_confidence(5 if on_road else 4, 0.55, 0.75, 0.78, 0.8 if far else 0.4)
         if far:
             conf *= 0.55
-        pts.append(ReconPoint(e, n, u, r, g, b, conf, 4))
+        pts.append(ReconPoint(e, n, u, r, g, b, conf, 4, source="proxy", provenance=("proxy_scene",), synthetic=True))
     # Vegetation blobs (medium/low)
     for cx, cy in [(-28, 18), (32, 22), (18, -18)]:
         for _ in range(80):
@@ -133,14 +133,14 @@ def _terrain_points(rng: np.random.Generator) -> list[ReconPoint]:
             n = cy + rng.normal(0, 3.2)
             u = abs(rng.normal(3.5, 1.1))
             conf = point_confidence(2, 0.4, 0.5, 0.78, 2.0)
-            pts.append(ReconPoint(e, n, u, 46, 92, 48, conf, 2))
+            pts.append(ReconPoint(e, n, u, 46, 92, 48, conf, 2, source="proxy", provenance=("proxy_scene",), synthetic=True))
     # Occluded courtyard (low)
     for _ in range(90):
         e = rng.uniform(-6, 6)
         n = rng.uniform(5, 11)
         u = rng.uniform(0.0, 1.6)
         conf = point_confidence(1, 0.15, 0.4, 0.78, 3.5)
-        pts.append(ReconPoint(e, n, u, 90, 88, 70, conf, 1))
+        pts.append(ReconPoint(e, n, u, 90, 88, 70, conf, 1, source="proxy", provenance=("proxy_scene",), synthetic=True))
     return pts
 
 

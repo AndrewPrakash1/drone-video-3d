@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
 from .sfm import Camera, SfMResult, _depth
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -68,7 +71,10 @@ def _depth_map(img_a, img_b, k, cam_a: Camera, cam_b: Camera, depth_range):
     if baseline < 1e-6:
         return None
     dist = np.zeros(5)
-    r1, r2, p1, p2, q, _, _ = cv2.stereoRectify(k, dist, k, dist, (w, h), r_rel, t_rel, alpha=0)
+    # alpha=0 crops to the overlapping region and can multiply the focal length
+    # several times over, which pushes the disparity window off the image and
+    # the depth map comes back empty. -1 keeps the original intrinsics.
+    r1, r2, p1, p2, q, _, _ = cv2.stereoRectify(k, dist, k, dist, (w, h), r_rel, t_rel, alpha=-1)
     map1x, map1y = cv2.initUndistortRectifyMap(k, dist, r1, p1, (w, h), cv2.CV_32FC1)
     map2x, map2y = cv2.initUndistortRectifyMap(k, dist, r2, p2, (w, h), cv2.CV_32FC1)
     ga = cv2.cvtColor(cv2.remap(img_a, map1x, map1y, cv2.INTER_LINEAR), cv2.COLOR_BGR2GRAY)
@@ -78,8 +84,18 @@ def _depth_map(img_a, img_b, k, cam_a: Camera, cam_b: Camera, depth_range):
     dmin, dmax = depth_range
     disp_max = f_rect * baseline / max(dmin, 1e-3)
     disp_min = f_rect * baseline / max(dmax, 1e-3)
-    num_disp = int(np.ceil(np.clip(disp_max - disp_min, 32, 320) / 16.0) * 16)
+    num_disp = int(np.ceil(np.clip(disp_max - disp_min, 32, 512) / 16.0) * 16)
     min_disp = int(max(np.floor(disp_min) - 8, 0))
+    # OpenCV throws when minDisparity + numDisparities leaves no room in the
+    # image. The depth range comes from sparse points and can be unreliable, so
+    # shrink the window (or give up) rather than letting SGBM raise.
+    limit = w - 4
+    if min_disp >= limit - 32:
+        return None
+    if min_disp + num_disp > limit:
+        num_disp = int(np.floor((limit - min_disp) / 16.0) * 16)
+    if num_disp < 32:
+        return None
     vertical = abs(p2[1, 3]) > abs(p2[0, 3])
     if vertical:
         ga = cv2.rotate(ga, cv2.ROTATE_90_CLOCKWISE)
@@ -117,6 +133,18 @@ def _depth_map(img_a, img_b, k, cam_a: Camera, cam_b: Camera, depth_range):
     return depth_unrect, mask
 
 
+def _views_to_check(i: int, nbrs: dict[int, list[int]], order: list[int], depth_maps: dict, limit: int = 3) -> list[int]:
+    """Neighbour views that actually have a depth map. Missing maps used to raise KeyError."""
+    seen: list[int] = []
+    for j in list(nbrs.get(i, [])) + [o for o in order if o in depth_maps and o != i]:
+        if j == i or j not in depth_maps or j in seen:
+            continue
+        seen.append(j)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
 def dense_reconstruct(result: SfMResult, images: dict[int, np.ndarray], work_width: int = 640, max_points_per_view: int = 8000, consistency_tol: float = 0.03, progress=None) -> DenseCloud:
     cams = result.cameras
     empty = DenseCloud(np.zeros((0, 3)), np.zeros((0, 3), np.uint8), np.zeros(0, int), np.zeros(0))
@@ -134,18 +162,29 @@ def dense_reconstruct(result: SfMResult, images: dict[int, np.ndarray], work_wid
         if len(pts) < 5:
             continue
         d = _depth(cam, pts)
-        d = d[d > 0]
+        d = d[np.isfinite(d) & (d > 0)]
         if len(d) < 5:
             continue
-        ranges[i] = (float(np.percentile(d, 3) * 0.7), float(np.percentile(d, 97) * 1.4))
+        # A handful of badly triangulated near points can collapse the range,
+        # which pushes the SGBM disparity window off the image. Keep the band
+        # within a sane multiple of the median depth instead.
+        med = float(np.median(d))
+        lo = max(float(np.percentile(d, 5)), med * 0.25)
+        hi = min(float(np.percentile(d, 95)), med * 6.0)
+        if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+            continue
+        ranges[i] = (lo * 0.9, hi * 1.1)
     depth_maps = {}
     order = sorted(cams)
     for n, i in enumerate(order):
         if i in ranges and nbrs.get(i):
             try:
                 dm = _depth_map(small[i], small[nbrs[i][0]], ks, cams[i], cams[nbrs[i][0]], ranges[i])
-            except cv2.error:
+            except cv2.error as exc:
+                log.warning("depth map failed for camera %s: %s", i, exc)
                 dm = None
+            if dm is None:
+                log.debug("no depth map for camera %s", i)
             if dm is not None:
                 depth_maps[i] = dm
         if progress:
@@ -166,7 +205,7 @@ def dense_reconstruct(result: SfMResult, images: dict[int, np.ndarray], work_wid
         cam_pts = (np.linalg.inv(ks) @ pix.T).T * z[:, None]
         world = (cam.rotation.T @ (cam_pts - cam.tvec[None]).T).T
         agree = np.ones(len(world), dtype=int)
-        for j in list(dict.fromkeys(nbrs.get(i, []) + [o for o in order if o in depth_maps and o != i]))[:3]:
+        for j in _views_to_check(i, nbrs, order, depth_maps):
             dj, _mj = depth_maps[j]
             cj = cams[j]
             cp = (cj.rotation @ world.T + cj.tvec[:, None]).T

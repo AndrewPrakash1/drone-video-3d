@@ -85,9 +85,9 @@ class SplatExportTest(unittest.TestCase):
             vals = struct.unpack("<17f", raw)
             self.assertEqual(vals[0:3], (1.0, 2.0, 3.0))
             self.assertAlmostEqual(vals[6], (1.0 - 0.5) / SH_C0, places=5)
-            # identity wxyz is stored as xyzw: rot_0..2 = 0, rot_3 = 1
-            self.assertEqual(vals[13:16], (0.0, 0.0, 0.0))
-            self.assertAlmostEqual(vals[16], 1.0, places=5)
+            # identity wxyz is stored as wxyz: rot_0 = 1, rot_1..3 = 0
+            self.assertAlmostEqual(vals[13], 1.0, places=5)
+            self.assertEqual(vals[14:17], (0.0, 0.0, 0.0))
 
     def test_train_skips_without_cuda_gsplat(self) -> None:
         info = splat_status()

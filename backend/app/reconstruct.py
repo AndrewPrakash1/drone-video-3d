@@ -22,6 +22,10 @@ class ReconPoint:
     b: int
     conf: float
     observations: int
+    source: str = "photogrammetry"
+    provenance: tuple[str, ...] = ()
+    uncertainty_m: float | None = None
+    synthetic: bool = False
 
 
 def camera_matrix(width: int, height: int, hfov_deg: float = 68.0) -> np.ndarray:
@@ -130,6 +134,9 @@ def triangulate_pair(
                 b=int(b),
                 conf=conf,
                 observations=2,
+                source="photogrammetry",
+                provenance=("sfm",),
+                uncertainty_m=max(0.05, min(20.0, 1.0 / max(conf, 0.05))),
             )
         )
     if len(points) < 20:
@@ -199,6 +206,9 @@ def _nadir_unproject(
                 b=int(bgr[0]),
                 conf=conf,
                 observations=1,
+                source="photogrammetry",
+                provenance=("nadir_fallback",),
+                uncertainty_m=max(0.1, min(20.0, 2.0 / max(conf, 0.05))),
             )
         )
     return points
@@ -212,6 +222,12 @@ def voxel_downsample(points: list[ReconPoint], voxel: float = 0.8) -> list[Recon
     fused: list[ReconPoint] = []
     for group in buckets.values():
         n = len(group)
+        labels = tuple(sorted({label for p in group for label in p.provenance}))
+        source_counts: dict[str, int] = {}
+        for p in group:
+            source_counts[p.source] = source_counts.get(p.source, 0) + 1
+        source = max(source_counts, key=source_counts.get)
+        uncertainties = [p.uncertainty_m for p in group if p.uncertainty_m is not None]
         fused.append(
             ReconPoint(
                 e=sum(p.e for p in group) / n,
@@ -222,6 +238,10 @@ def voxel_downsample(points: list[ReconPoint], voxel: float = 0.8) -> list[Recon
                 b=int(sum(p.b for p in group) / n),
                 conf=min(0.98, max(p.conf for p in group) + min(0.12, 0.02 * n)),
                 observations=sum(p.observations for p in group),
+                source=source,
+                provenance=labels,
+                uncertainty_m=min(uncertainties) if uncertainties else None,
+                synthetic=all(p.synthetic for p in group),
             )
         )
     return fused

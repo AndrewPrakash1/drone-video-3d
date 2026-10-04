@@ -307,6 +307,9 @@ def _reconstruct(
                 b=int(rgb[2]),
                 conf=score,
                 observations=max(2, int(n_views)),
+                source="vggt",
+                provenance=("vggt",),
+                uncertainty_m=max(0.1, min(20.0, 2.0 * (1.0 - c) + 0.25)),
             )
         )
     return voxel_downsample(points, voxel=float(os.environ.get("VGGT_VOXEL", "0.45")))

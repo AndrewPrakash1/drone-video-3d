@@ -24,6 +24,18 @@ def colmap_available() -> bool:
     return shutil.which("colmap") is not None
 
 
+def gpu_supported() -> bool:
+    """COLMAP builds without CUDA report 'without GPU support' on --version."""
+    binary = shutil.which("colmap")
+    if not binary:
+        return False
+    try:
+        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30)
+        return "without GPU support" not in (proc.stdout + proc.stderr)
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
 def run_sfm(image_dir: Path, work_dir: Path) -> dict[str, Any] | None:
     binary = shutil.which("colmap")
     if not binary:
@@ -33,7 +45,8 @@ def run_sfm(image_dir: Path, work_dir: Path) -> dict[str, Any] | None:
     sparse = work_dir / "sparse"
     sparse.mkdir(exist_ok=True)
     try:
-        gpu = os.environ.get("COLMAP_USE_GPU", "1").strip() not in {"0", "false", "no"}
+        # COLMAP 4.x renamed these (SiftExtraction/SiftMatching -> Feature*).
+        gpu = os.environ.get("COLMAP_USE_GPU", "1").strip() not in {"0", "false", "no"} and gpu_supported()
         extract = [
             binary,
             "feature_extractor",
@@ -43,10 +56,19 @@ def run_sfm(image_dir: Path, work_dir: Path) -> dict[str, Any] | None:
             str(image_dir),
             "--ImageReader.single_camera",
             "1",
-            "--SiftExtraction.use_gpu",
+            "--FeatureExtraction.use_gpu",
             "1" if gpu else "0",
         ]
-        match = [binary, "exhaustive_matcher", "--database_path", str(db), "--SiftMatching.use_gpu", "1" if gpu else "0"]
+        match = [
+            binary,
+            "sequential_matcher",
+            "--database_path",
+            str(db),
+            "--SequentialMatching.overlap",
+            os.environ.get("COLMAP_OVERLAP", "10"),
+            "--FeatureMatching.use_gpu",
+            "1" if gpu else "0",
+        ]
         try:
             _run(extract)
             _run(match)
@@ -151,6 +173,9 @@ def reconstruct_aligned(
                 b=int(rgb[2]),
                 conf=float(min(0.97, conf + 0.08)),
                 observations=6,
+                source="colmap",
+                provenance=("colmap",),
+                uncertainty_m=max(0.05, min(20.0, residual + 0.25)),
             )
         )
     info["points"] = len(out)
@@ -159,7 +184,9 @@ def reconstruct_aligned(
     return out, info
 
 
-def _run(cmd: list[str], timeout: int = 420) -> None:
+def _run(cmd: list[str], timeout: int | None = None) -> None:
+    if timeout is None:
+        timeout = int(os.environ.get("COLMAP_TIMEOUT_S", "1200"))
     subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
 
 
@@ -174,7 +201,12 @@ def _first_model(sparse: Path) -> Path | None:
 
 
 def _parse_images_txt(path: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """name -> (quaternion_wxyz, camera_center)."""
+    """name -> (quaternion_wxyz, camera_center).
+
+    COLMAP writes one image line followed by exactly one POINTS2D line, so the
+    parser must consume the POINTS2D line unconditionally. Skipping it only when
+    it looks short desynchronises as soon as an image has many 2D points.
+    """
     if not path.exists():
         return {}
     out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -186,17 +218,15 @@ def _parse_images_txt(path: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        if len(parts) < 10:
-            continue
-        qw, qx, qy, qz = map(float, parts[1:5])
-        tx, ty, tz = map(float, parts[5:8])
-        name = parts[9]
-        r = _quat_to_rot(qw, qx, qy, qz)
-        t = np.array([tx, ty, tz], dtype=np.float64)
-        center = -r.T @ t
-        out[name] = (np.array([qw, qx, qy, qz]), center)
-        # next line is 2D points — skip
-        if i < len(lines) and not lines[i].strip().startswith("#"):
+        if len(parts) >= 10:
+            qw, qx, qy, qz = map(float, parts[1:5])
+            tx, ty, tz = map(float, parts[5:8])
+            name = parts[9]
+            r = _quat_to_rot(qw, qx, qy, qz)
+            t = np.array([tx, ty, tz], dtype=np.float64)
+            out[name] = (np.array([qw, qx, qy, qz]), -r.T @ t)
+        # Always consume the matching POINTS2D line.
+        if i < len(lines):
             i += 1
     return out
 

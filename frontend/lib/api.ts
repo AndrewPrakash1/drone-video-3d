@@ -54,6 +54,10 @@ export type GeoPoint = {
   b?: number;
   conf?: number;
   band?: "high" | "medium" | "low";
+  source?: string;
+  provenance?: string[];
+  uncertainty_m?: number | null;
+  synthetic?: boolean;
 };
 
 export type Challenge = {
@@ -84,6 +88,26 @@ export type MeasureResult = {
   pass?: boolean | null;
 };
 
+export type SpatialModelStatus = {
+  available?: boolean;
+  status?: string;
+  version?: string;
+  architecture?: string;
+  architecture_ready?: boolean;
+  training_ready?: boolean;
+  inference_ready?: boolean;
+  reason?: string;
+};
+
+export type SceneManifest = {
+  schema: string;
+  coordinate_frame: string;
+  origin?: { lat: number; lon: number; alt: number } | null;
+  reconstruction?: { revision?: string; measurement_authoritative?: boolean; points?: number; cameras?: number };
+  generated_layers?: unknown[];
+  measurement?: { source?: string; generated_geometry_included?: boolean };
+};
+
 export type JobSnapshot = {
   id: string;
   kind: string;
@@ -102,7 +126,8 @@ export type JobSnapshot = {
   challenges?: Challenge[];
   cameras?: { e: number; n: number; u: number; rotation: number[]; fx: number; width: number; height: number }[];
   stages?: Record<string, { stage: string; label: string; status: string; stats?: Record<string, unknown> }>;
-  result?: { metric?: MeasureResult; splat?: { status?: string; reason?: string; gaussians?: number } };
+  result?: { metric?: MeasureResult; splat?: { status?: string; reason?: string; gaussians?: number }; scene?: SceneManifest; spatial_model?: { status?: string; reason?: string } };
+  scene?: SceneManifest;
 };
 
 export async function checkHealth(): Promise<{
@@ -110,6 +135,7 @@ export async function checkHealth(): Promise<{
   vggt?: unknown;
   colmap?: boolean;
   splat?: { available?: boolean; reason?: string | null; device?: string | null };
+  spatial_model?: SpatialModelStatus;
 }> {
   const res = await apiFetch("/health", { cache: "no-store" });
   if (!res.ok) throw new Error(`API unreachable (${res.status})`);
@@ -128,11 +154,34 @@ export async function startDemo(): Promise<{ id: string }> {
   return res.json();
 }
 
+/** Large multipart uploads bypass Next /api rewrites (10MB default buffer). */
+async function postMultipartDirect(path: string, body: FormData): Promise<Response> {
+  const bases = [
+    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, ""),
+    "http://127.0.0.1:8765",
+    "http://localhost:8765",
+  ].filter((v): v is string => Boolean(v));
+  let lastError: unknown;
+  for (const base of bases) {
+    try {
+      const res = await fetch(`${base}${path}`, { method: "POST", body });
+      if (res.ok) {
+        resolvedBase = base;
+        return res;
+      }
+      if (res.status >= 400 && res.status < 500) return res;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("API unreachable. Start uvicorn on port 8765.");
+}
+
 export async function startUpload(video: File, telemetry: File): Promise<{ id: string }> {
   const body = new FormData();
   body.append("video", video);
   body.append("telemetry", telemetry);
-  const res = await apiFetch("/jobs", { method: "POST", body });
+  const res = await postMultipartDirect("/jobs", body);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -147,6 +196,17 @@ export async function fetchJobSnapshot(jobId: string): Promise<JobSnapshot> {
   const res = await apiFetch(`/jobs/${jobId}/snapshot`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export async function fetchSceneManifest(jobId: string): Promise<SceneManifest> {
+  const res = await apiFetch(`/jobs/${jobId}/scene.json`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchSpatialModelStatus(): Promise<SpatialModelStatus> {
+  const health = await checkHealth();
+  return health.spatial_model ?? { status: "unknown", reason: "status unavailable" };
 }
 
 export async function measurePoints(

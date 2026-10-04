@@ -8,9 +8,10 @@ The dashboard builds a metric model you can measure. A known length on that mode
 
 - **Proxy mission** (no upload): South Delhi synthetic flyby of a building whose north eave is **20.0 m**. It has no photographs, so it does not train a Gaussian splat.
 - **Upload**: 1080p/4K clip + telemetry CSV. Classical photogrammetry always runs on the CPU. **VGGT** runs on CUDA when the official package is installed. **COLMAP** sparse points are fused when `colmap` is on PATH. **Gaussian splatting** then trains on that GPS-aligned cloud when CUDA and `gsplat` are installed.
-- Viewport: **Points**, **Mesh**, and **Neural**. Neural loads `/jobs/{id}/splat.ply` after training. Measure still uses the metric cloud.
+- Viewport: **Points**, **Mesh**, and **Neural**. Neural loads `/jobs/{id}/splat.ply` after training. **Occlusion** recolours the mesh by what the cameras actually saw. Measure still uses the metric cloud.
+- **Spatial layer** (after a mesh exists): an occlusion map and faultlines, a ground agent that plans a path on that surface, and metric Chisel blocks (road, facade, ground, fill). These inspect and constrain the GPS mesh. They do not generate new geometry, so a measured length does not move.
 - GPU laptop (RTX 5070 Ti): [docs/gpu-colmap.md](docs/gpu-colmap.md)
-- Export: georeferenced cloud (`/jobs/{id}/cloud.ply`) and, after training, the neural splat (`/jobs/{id}/splat.ply`).
+- Export: georeferenced cloud (`/jobs/{id}/cloud.ply`), the surface (`/jobs/{id}/mesh.ply`), the occlusion map (`/jobs/{id}/spatial.json`), and, after training, the neural splat (`/jobs/{id}/splat.ply`).
 
 ## Run locally
 
@@ -60,10 +61,11 @@ video + GPS
   → keep sharp, well-exposed frames
   → SIFT, matching, sparse SfM, bundle adjustment
   → scale and rotate the model onto GPS (east, north, up)
-  → dense multi-view stereo and a Poisson mesh
+  → dense multi-view stereo and a height-map surface
   → optional VGGT / COLMAP points fused into the same cloud
+  → occlusion map: which faces the cameras actually saw
   → optional 3D Gaussian training on those metres
-  → Three.js: Points, Mesh, or Neural
+  → Three.js: Points, Mesh, or Neural, plus the ground agent and Chisel blocks
 ```
 
 Photogrammetry answers “where is the surface, in metres?” Neural rendering answers “what does that surface look like from a new camera?” OnePass runs the first on every upload and the second only when CUDA is present. See [docs/sih26158.md](docs/sih26158.md) for the eight official challenges.
@@ -109,9 +111,32 @@ SfM’s own coordinate system has an arbitrary origin, rotation, and scale. **Um
 
 The sparse cloud is only the feature points. **Multi-view stereo (MVS)** estimates a depth for many more pixels by matching patches across the registered cameras, then keeps depths that agree from several views. Those dense points carry the colour of the source pixel. The fused cloud is voxel-downsampled so nearby duplicates collapse into one point.
 
-### Poisson mesh
+### Surface mesh
 
-A point cloud has no surface. **Poisson reconstruction** (Open3D) fits a smooth watertight mesh through the points and crops it to the cloud’s bounds. The viewport’s Mesh mode draws that surface with vertex colours. If the cloud is too thin, meshing is skipped and the points remain.
+A point cloud has no surface. The default mesh is a 2.5D height map: each grid cell takes the median height of the points that fall in it, spikes are dropped, and small holes are filled (`backend/app/mesh.py`). That suits a nadir or oblique drone pass, where the surface is terrain plus roofs rather than a fully enclosed object. Set `ONEPASS_MESH=poisson` to use Open3D Poisson instead. If the cloud is too thin, meshing is skipped and the points remain.
+
+### Occlusion map, ground agent, and Chisel
+
+`backend/app/spatial.py` runs after the final mesh. It does not add points and it does not change scale.
+
+**Occlusion.** Each face is projected into the reconstructed cameras. It counts as seen only when it lands inside the image, faces the camera, and is the nearest surface at that pixel. Faces no camera saw, and the open edges around them, are faultlines. The summary (seen fraction, largest blind patch, faultline count) is written to `spatial.json`. **Occlusion** in the viewport paints seen surface green and unseen surface red. A finished job that has a mesh and `cameras.json` but no `spatial.json` yet builds the map on the first request.
+
+**Ground agent.** Click a start and a goal on the mesh. A* walks the same height-map grid, in metres. Steep steps and **facade** blocks are impassable. Cells the drone never saw cost more, so the route prefers observed ground. The path is drawn in the viewport. Yellow marks are blind spots the route crosses. Red marks are faultlines it touches. This is a path on the mesh, not a physics simulation and not a traffic model.
+
+**Chisel.** Click the mesh to drop an axis-aligned box in ENU metres. The tag changes how the agent treats it:
+
+- `facade` blocks the route
+- `road` makes the route cheaper
+- `ground` is ordinary walkable surface
+- `fill` marks a blind spot as covered, so the unseen penalty is waived there
+
+Boxes are stored in `chisel.json` and drawn as translucent volumes. They are layout constraints. Nothing in this step textures them or invents the hidden side of a building.
+
+### Generative spatial intelligence foundation
+
+OnePass now has the first contract for an in-house generative spatial model without pretending that unseen geometry is measured. `scene.json` defines the GPS-aligned ENU reconstruction as authoritative, while `spatial.json` exposes blind patches and evidence states. Points and mesh payloads retain source, provenance, uncertainty, and generated-state metadata.
+
+`backend/app/spatial_model/` contains the staged model boundary: a metric-conditioned spatial transformer with completion and novel-view heads, training-sample contracts, and an optional inference stage. It currently reports `scaffold` and skips generation until tensorization, augmentation, checkpoint loading, and inference are implemented. Any future completion proposal defaults to `measurement_safe: false` and remains a separate generated layer, so plausible hidden facades cannot change the metric cloud or length check.
 
 ### Confidence and the length check
 
@@ -125,7 +150,7 @@ Each point gets a confidence from how many views saw it, how large the triangula
 
 ## Neural rendering
 
-Classical rendering draws a mesh with a hand-written lighting model. The Poisson mesh in this project is a Lambertian surface with vertex colours, so it looks flat. **Neural rendering** instead stores a scene representation that was optimised to reproduce the photographs, then draws new viewpoints from that representation.
+Classical rendering draws a mesh with a hand-written lighting model. The height-map mesh in this project is a Lambertian surface with vertex colours, so it looks flat. **Neural rendering** instead stores a scene representation that was optimised to reproduce the photographs, then draws new viewpoints from that representation.
 
 OnePass uses **3D Gaussian Splatting** for that representation. It does not replace the metric cloud, and it does not run a NeRF viewer.
 
@@ -184,9 +209,11 @@ Training is minutes on an RTX-class GPU, not a multi-hour NeRF. The proxy missio
 
 `frontend/components/recon-viewport.tsx` is a Three.js scene:
 
-- **Points** — the reconstructed cloud, constant-size markers.
-- **Mesh** — the Poisson surface.
+- **Points** — the reconstructed cloud. Marker size scales with the scene so a large site does not turn into a field of huge squares.
+- **Mesh** — the height-map surface, with vertex colours from the source frames.
+- **Occlusion** — the same mesh, green where a camera saw the face and red where it did not, with faultlines drawn on top.
 - **Neural** — `@mkkellogg/gaussian-splats-3d` loads `splat.ply` and sorts the Gaussians on the GPU as you orbit. ENU (east, north, up) is rotated into Three.js (east, up, −north), the same axis map as the point cloud. Camera frustums stay visible in every mode.
+- **Ground agent and Chisel** — the path, the flags, and the metric boxes, in the Spatial layer card. Picking a point raycasts the mesh, so switch to Mesh before clicking.
 
 Neural mode is disabled until a job reports that `splat.ply` is ready. Cesium measurement, where it is used, is unchanged. Gaussians are not drawn inside the globe.
 

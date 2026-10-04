@@ -1,7 +1,7 @@
 """Binary 3D Gaussian PLY for the Three.js viewer.
 
-GaussianSplats3D's INRIA parser passes rot_0..rot_3 to THREE.Quaternion.set(x, y, z, w).
-gsplat stores quaternions as w, x, y, z, so this writer swaps them on the way out.
+GaussianSplats3D's INRIA parser reads rot_0..rot_3 as (w, x, y, z), the same order
+gsplat stores quaternions in, so this writer stores them unchanged.
 Scales are log-encoded and opacity is a logit, matching that parser.
 Spherical harmonics are degree 0 (f_dc only). The viewer does not render degree 3.
 """
@@ -59,8 +59,8 @@ def write_gaussian_ply(
     f_dc = ((colors - 0.5) / SH_C0).astype(np.float32)
     logit = np.log(opacities / (1.0 - opacities)).astype(np.float32)
     log_scale = np.log(scales).astype(np.float32)
-    # wxyz -> xyzw for GaussianSplats3D
-    rot = np.stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]], axis=1).astype(np.float32)
+    # Viewer reads rot_0..rot_3 as (w, x, y, z); gsplat quats are already wxyz.
+    rot = quats
 
     path.parent.mkdir(parents=True, exist_ok=True)
     header = _HEADER.format(n=n).encode("ascii")

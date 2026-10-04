@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -38,7 +39,29 @@ def create_job(kind: str) -> Job:
 
 
 def get_job(jid: str) -> Job | None:
-    return JOBS.get(jid)
+    job = JOBS.get(jid)
+    if job is not None or not re.fullmatch(r"[0-9a-f]{12}", jid):
+        return job
+    # Finished jobs survive an API restart through their artifact folder.
+    folder = WORKDIR / jid
+    if not (folder / "cloud.json").exists():
+        return None
+    result: dict[str, Any] = {}
+    try:
+        result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    job = Job(id=jid, kind=str(result.get("kind") or "upload"), status="done", artifact_dir=folder, result=result)
+    JOBS[jid] = job
+    return job
+
+
+def _save_result(job: Job) -> None:
+    try:
+        payload = {**job.result, "kind": job.kind}
+        (job.artifact_dir / "result.json").write_text(json.dumps(payload, default=str), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def job_snapshot(job: Job) -> dict[str, Any]:
@@ -54,6 +77,15 @@ def job_snapshot(job: Job) -> dict[str, Any]:
     message = ""
     progress = 0
     result = job.result or None
+    scene: dict[str, Any] | None = None
+    scene_path = job.artifact_dir / "scene.json"
+    if scene_path.exists():
+        try:
+            raw_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            if isinstance(raw_scene, dict):
+                scene = raw_scene
+        except (OSError, json.JSONDecodeError):
+            pass
 
     for event in job.events:
         et = event.get("type")
@@ -88,6 +120,15 @@ def job_snapshot(job: Job) -> dict[str, Any]:
             message = str(event.get("message") or message)
             progress = 100
             result = event.get("result") or result
+        elif et == "error":
+            message = str(event.get("message") or job.error or message)
+
+    if job.status == "error":
+        for key, stage in list(stages.items()):
+            if stage.get("status") == "running":
+                stages[key] = {**stage, "status": "failed"}
+        if job.error:
+            message = "Reconstruction failed"
 
     cloud_path = job.artifact_dir / "cloud.json"
     if cloud_path.exists():
@@ -95,6 +136,23 @@ def job_snapshot(job: Job) -> dict[str, Any]:
             points = json.loads(cloud_path.read_text(encoding="utf-8")).get("points") or points
         except json.JSONDecodeError:
             pass
+    cameras_path = job.artifact_dir / "cameras.json"
+    if not cameras and cameras_path.exists():
+        try:
+            cameras = json.loads(cameras_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    if job.status == "done" and not stages and result:
+        mesh = result.get("mesh") or {}
+        stages["mesh"] = {
+            "type": "stage",
+            "stage": "mesh",
+            "label": "Surface mesh",
+            "status": "done" if mesh.get("status") == "ok" else "skipped",
+            "stats": {k: v for k, v in mesh.items() if k != "path"},
+        }
+        message = message or "Reconstruction complete"
+        progress = 100
 
     return {
         "id": job.id,
@@ -120,11 +178,14 @@ def job_snapshot(job: Job) -> dict[str, Any]:
         "cameras": cameras,
         "stages": stages,
         "result": result,
+        "scene": scene or (result or {}).get("scene"),
     }
 
 
 async def emit(job: Job, event: dict[str, Any]) -> None:
     job.events.append(event)
+    if event.get("type") == "done":
+        _save_result(job)
     pending = job.waiters
     job.waiters = []
     for fut in pending:

@@ -185,6 +185,9 @@ class IncrementalSfM:
             return img_idx
         inl = inliers.ravel()
         ok2, rvec, tvec = cv2.solvePnP(pts3[inl], pts2[inl], self.k, None, rvec, tvec, True, cv2.SOLVEPNP_ITERATIVE)
+        if not ok2:
+            self.cameras[img_idx] = Camera(img_idx, np.full(3, np.nan), np.full(3, np.nan))
+            return img_idx
         cam = Camera(img_idx, rvec.ravel(), tvec.ravel())
         self.cameras[img_idx] = cam
         feat = self.features[img_idx]
@@ -346,6 +349,7 @@ def align_to_gps(result: SfMResult, gps_centers: dict[int, np.ndarray]) -> SfMRe
     if sim is None:
         return result
     s, r, t = sim
+    r = _resolve_nadir_roll(r, result.cameras, ids, gps_centers)
     if len(result.points):
         result.points = (s * (r @ result.points.T)).T + t
     for cam in result.cameras.values():
@@ -358,6 +362,60 @@ def align_to_gps(result: SfMResult, gps_centers: dict[int, np.ndarray]) -> SfMRe
     result.gps_scale = float(s)
     result.gps_rmse_m = float(np.sqrt(np.mean(np.sum((aligned - dst) ** 2, axis=1))))
     return result
+
+
+def _resolve_nadir_roll(r: np.ndarray, cameras: dict[int, Camera], ids: list[int], gps_centers: dict[int, np.ndarray]) -> np.ndarray:
+    """Fix Umeyama's free roll about a (near-)straight flight line.
+
+    For a straight drone pass the camera centres are collinear, so the similarity
+    rotation about the flight axis is not determined by the centre correspondences
+    alone — numpy's SVD just picks one. A nadir drone's mean optical axis must
+    point down in ENU, so rotate the alignment about the (GPS) flight axis until
+    it does. No-op when the pass is not near-collinear (the data already fixes the
+    rotation) or when the geometry is degenerate.
+    """
+    if len(ids) < 2:
+        return r
+    src = np.array([cameras[i].center for i in ids], dtype=np.float64)
+    dst = np.array([gps_centers[i] for i in ids], dtype=np.float64)
+
+    src_c = src - src.mean(axis=0)
+    sv = np.linalg.svd(src_c, compute_uv=False)
+    if sv[0] < 1e-9:
+        return r
+    # Near-collinear pass: the second singular value is small relative to the first.
+    if sv[1] / sv[0] > 0.25:
+        return r
+
+    dst_c = dst - dst.mean(axis=0)
+    _, _, vt = np.linalg.svd(dst_c)
+    axis = vt[0]
+    axis_norm = np.linalg.norm(axis)
+    if axis_norm < 1e-9:
+        return r
+    axis = axis / axis_norm
+
+    # Mean camera optical axis (+z, third row of R_w2c) in SfM world, then ENU.
+    opt = np.zeros(3)
+    for i in ids:
+        opt = opt + cameras[i].rotation[2]
+    opt_norm = np.linalg.norm(opt)
+    if opt_norm < 1e-9:
+        return r
+    opt = r @ (opt / opt_norm)
+
+    down = np.array([0.0, 0.0, -1.0])
+    p_opt = opt - axis * float(opt @ axis)
+    p_down = down - axis * float(down @ axis)
+    p_opt_n = np.linalg.norm(p_opt)
+    p_down_n = np.linalg.norm(p_down)
+    if p_opt_n < 1e-9 or p_down_n < 1e-9:
+        return r
+    p_opt = p_opt / p_opt_n
+    p_down = p_down / p_down_n
+    ang = float(np.arctan2(np.dot(axis, np.cross(p_opt, p_down)), np.dot(p_opt, p_down)))
+    r_roll, _ = cv2.Rodrigues(axis * ang)
+    return r_roll @ r
 
 
 def run_sfm(features, pairs, tracks, k, progress=None):

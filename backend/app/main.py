@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Coroutine
 from pathlib import Path
+
+import numpy as np
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,10 +16,13 @@ from .adapters.vggt import vggt_available, vggt_status
 from .splats.train import splat_status
 from .demo_scene import write_demo_files
 from .geo import Origin, geodetic_to_enu, make_origin
-from .jobs import create_job, get_job, job_snapshot, sse_stream
+from .jobs import Job, create_job, emit, get_job, job_snapshot, sse_stream
 from .metric import evaluate
 from .osm_buildings import fetch_buildings
 from .pipeline import run_demo, run_upload
+from .scene import read_scene_manifest
+from .spatial import load_mesh, normalize_blocks, plan_route, write_spatial
+from .spatial_model import spatial_model_status
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DEMO = ROOT / "data" / "demo"
@@ -34,6 +41,24 @@ def _startup() -> None:
     write_demo_files(DATA_DEMO)
 
 
+def _spawn(job: Job, coro: Coroutine) -> None:
+    """Run a job coroutine in the background and surface any unhandled error.
+
+    Without this, an exception outside the runner's own try/except is dropped by
+    the event loop and leaves job.status stuck at "running" forever.
+    """
+
+    async def _runner() -> None:
+        try:
+            await coro
+        except Exception as exc:
+            job.status = "error"
+            job.error = f"{type(exc).__name__}: {exc}"
+            await emit(job, {"type": "error", "message": job.error})
+
+    asyncio.create_task(_runner())
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -41,6 +66,7 @@ def health() -> dict:
         "vggt": vggt_status(),
         "colmap": colmap_available(),
         "splat": splat_status(),
+        "spatial_model": spatial_model_status(),
     }
 
 
@@ -73,14 +99,14 @@ async def start_brighton() -> dict:
     if not video.exists() or not telem.exists():
         raise HTTPException(404, "Brighton Beach flight is not in data/brighton")
     job = create_job("brighton")
-    asyncio.create_task(run_upload(job, video, telem.read_text(encoding="utf-8")))
+    _spawn(job, run_upload(job, video, telem.read_text(encoding="utf-8")))
     return {"id": job.id, "kind": "brighton", "dataset": "OpenDroneMap Brighton Beach"}
 
 
 @app.post("/jobs/demo")
 async def start_demo() -> dict:
     job = create_job("demo")
-    asyncio.create_task(run_demo(job, DATA_DEMO))
+    _spawn(job, run_demo(job, DATA_DEMO))
     return {"id": job.id, "kind": job.kind}
 
 
@@ -100,7 +126,7 @@ async def start_upload(
     if not text.strip():
         raise HTTPException(400, "Provide telemetry CSV (file or telemetry_text)")
     (job.artifact_dir / "telemetry.csv").write_text(text, encoding="utf-8")
-    asyncio.create_task(run_upload(job, video_path, text))
+    _spawn(job, run_upload(job, video_path, text))
     return {"id": job.id, "kind": job.kind}
 
 
@@ -144,6 +170,117 @@ def job_cloud(jid: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(404, "cloud not ready")
     return FileResponse(path, filename="cloud.ply")
+
+
+@app.get("/jobs/{jid}/cloud.json")
+def job_cloud_json(jid: str) -> FileResponse:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    path = job.artifact_dir / "cloud.json"
+    if not path.exists():
+        raise HTTPException(404, "cloud not ready")
+    return FileResponse(path, media_type="application/json")
+
+
+@app.get("/jobs/{jid}/scene.json")
+def job_scene(jid: str) -> dict:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    scene = read_scene_manifest(job.artifact_dir)
+    if scene is None:
+        raise HTTPException(404, "scene not ready")
+    return scene
+
+
+@app.get("/jobs/{jid}/spatial.json")
+def job_spatial(jid: str) -> FileResponse:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    path = job.artifact_dir / "spatial.json"
+    if not path.exists():
+        mesh = job.artifact_dir / "mesh.ply"
+        cameras_path = job.artifact_dir / "cameras.json"
+        if not mesh.exists() or not cameras_path.exists():
+            raise HTTPException(404, "spatial not ready")
+        cameras = json.loads(cameras_path.read_text(encoding="utf-8"))
+        write_spatial(mesh, cameras, path)
+    return FileResponse(path, media_type="application/json")
+
+
+@app.get("/jobs/{jid}/chisel.json")
+def job_chisel(jid: str) -> dict:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    path = job.artifact_dir / "chisel.json"
+    if not path.exists():
+        return {"blocks": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.post("/jobs/{jid}/chisel")
+def job_chisel_save(jid: str, body: dict) -> dict:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    try:
+        blocks = normalize_blocks(body.get("blocks") or [])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    payload = {"blocks": blocks}
+    (job.artifact_dir / "chisel.json").write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
+@app.post("/jobs/{jid}/route")
+def job_route(jid: str, body: dict) -> dict:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    mesh = job.artifact_dir / "mesh.ply"
+    if not mesh.exists():
+        raise HTTPException(404, "mesh not ready")
+    try:
+        start = [float(v) for v in body["start"]]
+        goal = [float(v) for v in body["goal"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(400, "start and goal must be ENU triples") from exc
+    if len(start) != 3 or len(goal) != 3:
+        raise HTTPException(400, "start and goal must be ENU triples")
+    if "blocks" in body:
+        try:
+            blocks = normalize_blocks(body.get("blocks") or [])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        (job.artifact_dir / "chisel.json").write_text(json.dumps({"blocks": blocks}), encoding="utf-8")
+    else:
+        chisel_path = job.artifact_dir / "chisel.json"
+        blocks = json.loads(chisel_path.read_text(encoding="utf-8")).get("blocks") or [] if chisel_path.exists() else []
+    verts, faces = load_mesh(mesh)
+    seen = None
+    faultlines: list = []
+    spatial_path = job.artifact_dir / "spatial.json"
+    if spatial_path.exists():
+        payload = json.loads(spatial_path.read_text(encoding="utf-8"))
+        raw_seen = payload.get("seen") or []
+        if len(raw_seen) == len(faces):
+            seen = np.asarray(raw_seen, dtype=np.int32)
+        faultlines = payload.get("faultlines") or []
+    return plan_route(verts, faces, seen, start, goal, blocks, faultlines)
+
+
+@app.get("/jobs/{jid}/spatial_model.json")
+def job_spatial_model(jid: str) -> FileResponse:
+    job = get_job(jid)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    path = job.artifact_dir / "spatial_model.json"
+    if not path.exists():
+        raise HTTPException(404, "spatial model status not ready")
+    return FileResponse(path, media_type="application/json")
 
 
 @app.get("/jobs/{jid}/mesh.json")

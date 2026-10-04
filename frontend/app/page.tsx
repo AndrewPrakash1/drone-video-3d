@@ -33,9 +33,20 @@ import {
   type JobSnapshot,
   type MeasureResult,
   type Reference,
+  type SpatialModelStatus,
 } from "@/lib/api";
 import type { ColorMode } from "@/components/cesium-globe";
-import { ReconViewport, type MeshPayload, type ReconCamera, type ViewMode } from "@/components/recon-viewport";
+import {
+  ReconViewport,
+  type AgentRoute,
+  type ChiselBlock,
+  type ChiselTag,
+  type EnuPoint,
+  type MeshPayload,
+  type ReconCamera,
+  type SpatialPayload,
+  type ViewMode,
+} from "@/components/recon-viewport";
 
 type AdapterState = {
   vggt: boolean | { available?: boolean; cuda?: boolean; package?: boolean; device?: string | null; reason?: string | null };
@@ -118,6 +129,7 @@ export default function MissionPage() {
   const [message, setMessage] = useState("No mission. Start the proxy flyby or upload a single-pass clip.");
   const [progress, setProgress] = useState(0);
   const [points, setPoints] = useState<GeoPoint[]>([]);
+  const [finalCloud, setFinalCloud] = useState<GeoPoint[] | null>(null);
   const [pose, setPose] = useState<Pose | null>(null);
   const [trajectory, setTrajectory] = useState<Pose[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
@@ -139,10 +151,20 @@ export default function MissionPage() {
   const [cameras, setCameras] = useState<ReconCamera[]>([]);
   const [stages, setStages] = useState<Record<string, StageView>>({});
   const [mesh, setMesh] = useState<MeshPayload | null>(null);
+  const [spatial, setSpatial] = useState<SpatialPayload | null>(null);
+  const [showOcclusion, setShowOcclusion] = useState(false);
+  const [chisel, setChisel] = useState<ChiselBlock[]>([]);
+  const [chiselTag, setChiselTag] = useState<ChiselTag>("facade");
+  const [chiselSize, setChiselSize] = useState({ width: 8, depth: 8, height: 4 });
+  const [spatialTool, setSpatialTool] = useState<"off" | "agent" | "chisel">("off");
+  const [agentStart, setAgentStart] = useState<EnuPoint | null>(null);
+  const [agentGoal, setAgentGoal] = useState<EnuPoint | null>(null);
+  const [route, setRoute] = useState<AgentRoute | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("points");
   const [splatUrl, setSplatUrl] = useState<string | null>(null);
   const [splatNote, setSplatNote] = useState<string | null>(null);
   const [splatHealth, setSplatHealth] = useState<{ available?: boolean; reason?: string | null; device?: string | null } | null>(null);
+  const [spatialModelHealth, setSpatialModelHealth] = useState<SpatialModelStatus | null>(null);
   const pointsReceivedRef = useRef(0);
 
   const snapshotSetters = useMemo(
@@ -176,6 +198,7 @@ export default function MissionPage() {
           setAdapters({ vggt: (h.vggt as AdapterState["vggt"]) ?? false, colmap: Boolean(h.colmap) });
         }
         if (h?.splat) setSplatHealth(h.splat);
+        if (h?.spatial_model) setSpatialModelHealth(h.spatial_model);
       })
       .catch(() => {
         setApiOk(false);
@@ -187,6 +210,15 @@ export default function MissionPage() {
     fetchReference().then(setReference).catch(() => undefined);
     refreshHealth();
   }, [refreshHealth]);
+
+  useEffect(() => {
+    const jid = new URLSearchParams(window.location.search).get("job");
+    if (jid && /^[0-9a-f]{12}$/.test(jid)) {
+      setState("running");
+      setMessage("Loading saved reconstruction…");
+      setJobId(jid);
+    }
+  }, []);
 
   useEffect(() => {
     if (splatUrl) setViewMode("neural");
@@ -216,6 +248,7 @@ export default function MissionPage() {
 
   useEffect(() => {
     if (!jobId) return;
+    window.history.replaceState(null, "", `?job=${jobId}`);
     pointsReceivedRef.current = 0;
     const base = getApiBase();
     setApiBase(base || "/api");
@@ -287,10 +320,6 @@ export default function MissionPage() {
         fetchJobSnapshot(jobId)
           .then((snap) => applySnapshot(snap, snapshotSetters))
           .catch(() => undefined);
-        fetch(apiUrl(`/jobs/${jobId}/mesh.json`))
-          .then((r) => (r.ok ? r.json() : null))
-          .then((m) => { if (m?.positions) setMesh(m as MeshPayload); })
-          .catch(() => undefined);
       }
       if (data.type === "error") {
         setState("error");
@@ -340,12 +369,109 @@ export default function MissionPage() {
     };
   }, [jobId, snapshotSetters, adoptSplat]);
 
+  // The job can reach "done" via the SSE event, the snapshot poll, or the
+  // reconnect handler; the mesh has to load whichever one wins.
+  useEffect(() => {
+    if (state !== "done" || !jobId) return;
+    let dead = false;
+    fetch(apiUrl(`/jobs/${jobId}/mesh.json`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => { if (!dead && m?.positions) setMesh(m as MeshPayload); })
+      .catch(() => undefined);
+    fetch(apiUrl(`/jobs/${jobId}/spatial.json`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => { if (!dead && s?.seen) setSpatial(s as SpatialPayload); })
+      .catch(() => undefined);
+    fetch(apiUrl(`/jobs/${jobId}/chisel.json`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((c) => { if (!dead && Array.isArray(c?.blocks)) setChisel(c.blocks as ChiselBlock[]); })
+      .catch(() => undefined);
+    fetch(apiUrl(`/jobs/${jobId}/cloud.json`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((c) => {
+        if (dead || !c?.points?.length) return;
+        setFinalCloud(c.points as GeoPoint[]);
+        setColorMode("rgb");
+      })
+      .catch(() => undefined);
+    return () => {
+      dead = true;
+    };
+  }, [state, jobId]);
+
+  const onSurfaceClick = useCallback((point: EnuPoint) => {
+    const round = (v: number) => Math.round(v * 100) / 100;
+    if (spatialTool === "chisel") {
+      const { width, depth, height } = chiselSize;
+      const block: ChiselBlock = {
+        id: `b${Date.now()}`,
+        tag: chiselTag,
+        min: [round(point.e - width / 2), round(point.n - depth / 2), round(point.u)],
+        max: [round(point.e + width / 2), round(point.n + depth / 2), round(point.u + height)],
+      };
+      setChisel((prev) => {
+        const next = [...prev, block];
+        if (jobId) {
+          void fetch(apiUrl(`/jobs/${jobId}/chisel`), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ blocks: next }),
+          });
+        }
+        return next;
+      });
+      return;
+    }
+    if (spatialTool !== "agent" || !jobId) return;
+    if (!agentStart || agentGoal) {
+      setAgentStart(point);
+      setAgentGoal(null);
+      setRoute(null);
+      return;
+    }
+    setAgentGoal(point);
+    void fetch(apiUrl(`/jobs/${jobId}/route`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start: [agentStart.e, agentStart.n, agentStart.u],
+        goal: [point.e, point.n, point.u],
+        blocks: chisel,
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (body) setRoute(body as AgentRoute); })
+      .catch(() => setRoute({ path: [], length_m: 0, flags: [], reason: "route request failed" }));
+  }, [spatialTool, chiselSize, chiselTag, chisel, jobId, agentStart, agentGoal]);
+
+  function removeBlock(id: string) {
+    setChisel((prev) => {
+      const next = prev.filter((block) => block.id !== id);
+      if (jobId) {
+        void fetch(apiUrl(`/jobs/${jobId}/chisel`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ blocks: next }),
+        });
+      }
+      return next;
+    });
+  }
+
   async function onDemo() {
     setError(null);
     setPoints([]);
+    setFinalCloud(null);
     setCameras([]);
     setStages({});
     setMesh(null);
+    setSpatial(null);
+    setShowOcclusion(false);
+    setChisel([]);
+    setSpatialTool("off");
+    setAgentStart(null);
+    setAgentGoal(null);
+    setRoute(null);
     setViewMode("points");
     setSplatUrl(null);
     setSplatNote(null);
@@ -368,9 +494,17 @@ export default function MissionPage() {
   async function onBrighton() {
     setError(null);
     setPoints([]);
+    setFinalCloud(null);
     setCameras([]);
     setStages({});
     setMesh(null);
+    setSpatial(null);
+    setShowOcclusion(false);
+    setChisel([]);
+    setSpatialTool("off");
+    setAgentStart(null);
+    setAgentGoal(null);
+    setRoute(null);
     setViewMode("points");
     setSplatUrl(null);
     setSplatNote(null);
@@ -397,9 +531,17 @@ export default function MissionPage() {
     }
     setError(null);
     setPoints([]);
+    setFinalCloud(null);
     setCameras([]);
     setStages({});
     setMesh(null);
+    setSpatial(null);
+    setShowOcclusion(false);
+    setChisel([]);
+    setSpatialTool("off");
+    setAgentStart(null);
+    setAgentGoal(null);
+    setRoute(null);
     setViewMode("points");
     setSplatUrl(null);
     setSplatNote(null);
@@ -427,6 +569,7 @@ export default function MissionPage() {
   }, [state]);
 
   const showEmptyHint = state === "idle" && points.length === 0;
+  const shownPoints = finalCloud ?? points;
 
   return (
     <div className="flex min-h-screen flex-col bg-[#070b14] text-slate-100">
@@ -464,19 +607,27 @@ export default function MissionPage() {
         <section className="flex min-h-[520px] flex-col gap-3">
           <div className="relative min-h-[480px] flex-1">
             <ReconViewport
-              points={points}
+              points={shownPoints}
               cameras={cameras}
               mesh={mesh}
               viewMode={viewMode}
+              colorMode={colorMode}
               splatUrl={splatUrl}
               onSplatError={(message) => setSplatNote(message)}
+              showOcclusion={showOcclusion}
+              spatial={spatial}
+              chisel={chisel}
+              route={route}
+              agentMarkers={{ start: agentStart ?? undefined, goal: agentGoal ?? undefined }}
+              pickActive={spatialTool !== "off"}
+              onSurfaceClick={onSurfaceClick}
             />
             {showEmptyHint ? (
               <div className="pointer-events-none absolute bottom-3 left-3 right-3 flex justify-center">
                 <div className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-xl border border-white/10 bg-black/70 px-4 py-3 shadow-xl">
                   <MapPin className="h-5 w-5 shrink-0 text-amber-400" />
                   <p className="text-sm text-slate-200">
-                    GPU viewport. Run the real DJI flight to reconstruct a point cloud, camera frustums, and Poisson mesh.
+                    GPU viewport. Run the real DJI flight to reconstruct a point cloud, camera frustums, and surface mesh.
                   </p>
                   <Button onClick={onBrighton} className="shrink-0">
                     Start flight
@@ -489,9 +640,9 @@ export default function MissionPage() {
                 {message || "Reconstructing…"}
               </div>
             ) : null}
-            {points.length > 0 ? (
+            {shownPoints.length > 0 ? (
               <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/70 px-3 py-1.5 text-xs text-slate-200">
-                {points.length.toLocaleString()} points · drag to orbit
+                {shownPoints.length.toLocaleString()} points · drag to orbit
               </div>
             ) : null}
           </div>
@@ -515,6 +666,9 @@ export default function MissionPage() {
                 {m}
               </Button>
             ))}
+            <Button size="sm" variant={showOcclusion ? "default" : "outline"} onClick={() => { setShowOcclusion((v) => !v); setViewMode("mesh"); }}>
+              Occlusion
+            </Button>
             <Button size="sm" variant={measuring ? "default" : "outline"} onClick={() => { setMeasuring((v) => !v); setPicks([]); }}>
               <Ruler /> Measure
             </Button>
@@ -551,7 +705,7 @@ export default function MissionPage() {
                 </Button>
               </div>
               <p className="text-[11px] text-slate-500">
-                API: {apiBase}. CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}. Gaussian {splatHealth?.available ? `ready${splatHealth.device ? ` on ${splatHealth.device}` : ""}` : splatHealth?.reason || "install CUDA gsplat to train the neural view"}.
+                API: {apiBase}. CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}. Gaussian {splatHealth?.available ? `ready${splatHealth.device ? ` on ${splatHealth.device}` : ""}` : splatHealth?.reason || "install CUDA gsplat to train the neural view"}. Generative spatial model {spatialModelHealth?.inference_ready ? "inference ready" : spatialModelHealth?.architecture_ready ? "architecture scaffolded — training pending" : "optional model dependencies unavailable"}.
               </p>
             </CardContent>
           </Card>
@@ -617,6 +771,72 @@ export default function MissionPage() {
 
           <Card className="border-white/10 bg-slate-900/50">
             <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Spatial layer</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-xs text-slate-300">
+              <p className="text-slate-400">
+                {spatial
+                  ? `${Math.round(spatial.summary.seen_fraction * 100)}% of the surface was seen. Largest blind patch: ${spatial.summary.largest_unseen_patch.toLocaleString()} faces. ${spatial.summary.faultlines.toLocaleString()} faultlines.`
+                  : "Occlusion map appears when a mesh and cameras are ready."}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant={spatialTool === "agent" ? "default" : "outline"} onClick={() => { setSpatialTool((t) => (t === "agent" ? "off" : "agent")); setViewMode("mesh"); setAgentStart(null); setAgentGoal(null); setRoute(null); }}>
+                  Ground agent
+                </Button>
+                <Button size="sm" variant={spatialTool === "chisel" ? "default" : "outline"} onClick={() => { setSpatialTool((t) => (t === "chisel" ? "off" : "chisel")); setViewMode("mesh"); }}>
+                  Chisel
+                </Button>
+              </div>
+              {spatialTool === "agent" ? (
+                <p className="text-slate-400">{agentStart && !agentGoal ? "Click the goal on the mesh." : "Click a start on the mesh, then a goal. The route prefers ground the drone saw and stops at facade blocks."}</p>
+              ) : null}
+              {route ? (
+                <div className="rounded-md border border-white/10 bg-black/30 p-2 font-mono">
+                  {route.path.length ? <div>{route.length_m.toFixed(1)} m · {route.flags.length} flags</div> : <div>{route.reason || "No route"}</div>}
+                  {route.flags.slice(0, 6).map((flag, i) => (
+                    <div key={`${flag.kind}-${i}`}>{flag.kind} {flag.e.toFixed(1)}, {flag.n.toFixed(1)}</div>
+                  ))}
+                </div>
+              ) : null}
+              {spatialTool === "chisel" ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="col-span-2">
+                    Tag
+                    <select className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1" value={chiselTag} onChange={(e) => setChiselTag(e.target.value as ChiselTag)}>
+                      {(["road", "facade", "ground", "fill"] as ChiselTag[]).map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+                    </select>
+                  </label>
+                  {(["width", "depth", "height"] as const).map((key) => (
+                    <label key={key}>
+                      {key} m
+                      <input
+                        type="number"
+                        min={0.5}
+                        step={0.5}
+                        className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1"
+                        value={chiselSize[key]}
+                        onChange={(e) => setChiselSize((size) => ({ ...size, [key]: Math.max(0.5, Number(e.target.value) || 0.5) }))}
+                      />
+                    </label>
+                  ))}
+                  <p className="col-span-2 text-slate-400">Click the mesh. The box is in the same metres as the GPS model. Facade blocks the agent, road is cheap, fill marks a blind spot as covered.</p>
+                </div>
+              ) : null}
+              {chisel.length ? (
+                <ul className="space-y-1">
+                  {chisel.map((block) => (
+                    <li key={block.id} className="flex items-center justify-between gap-2">
+                      <span>{block.tag} {Math.round(block.max[0] - block.min[0])}×{Math.round(block.max[1] - block.min[1])}×{Math.round(block.max[2] - block.min[2])} m</span>
+                      <button type="button" className="text-rose-300" onClick={() => removeBlock(block.id)}>Remove</button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/10 bg-slate-900/50">
+            <CardHeader className="pb-2">
               <CardTitle className="text-sm">Photogrammetry</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -626,8 +846,9 @@ export default function MissionPage() {
                 ["sfm", "Sparse SfM"],
                 ["ba", "Bundle adjustment"],
                 ["mvs", "Dense multi-view stereo"],
-                ["mesh", "Poisson surface"],
+                ["mesh", "Surface mesh"],
                 ["vggt", "VGGT neural (GPU)"],
+                ["colmap", "COLMAP SfM + fusion"],
                 ["splat", "Gaussian splatting"],
               ] as const).map(([id, fallback]) => {
                 const stage = stages[id];
@@ -638,7 +859,7 @@ export default function MissionPage() {
                       {stage?.stats ? (
                         <div className="text-slate-500">
                           {Object.entries(stage.stats)
-                            .filter(([k, v]) => ["keypoints", "ransac_inliers", "outliers_removed", "cameras", "points", "dense_points", "rmse_after_px", "method", "triangles", "chunks", "device", "reason", "gaussians", "steps", "loss", "undistorted"].includes(k) && v != null)
+                            .filter(([k, v]) => ["keypoints", "ransac_inliers", "outliers_removed", "far_points_removed", "cameras", "points", "dense_points", "rmse_after_px", "method", "triangles", "chunks", "device", "reason", "gaussians", "steps", "loss", "undistorted"].includes(k) && v != null)
                             .map(([k, v]) => `${k} ${v}`)
                             .join(" · ")}
                         </div>
