@@ -1,13 +1,14 @@
 /**
- * Same-origin /api is first so the browser talks only to the dashboard
- * (port 43123). Next rewrites that to the API. Direct :8765 is a fallback.
+ * A configured public API is preferred in production. Same-origin /api and
+ * local :8765 endpoints remain fallbacks for the dashboard development setup.
  */
+const configuredApi = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
 const DIRECT_CANDIDATES = [
+  configuredApi,
   "",
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, ""),
   "http://127.0.0.1:8765",
   "http://localhost:8765",
-].filter((v): v is string => v != null);
+].filter((v): v is string => v !== undefined);
 
 let resolvedBase = "";
 
@@ -156,11 +157,7 @@ export async function startDemo(): Promise<{ id: string }> {
 
 /** Large multipart uploads bypass Next /api rewrites (10MB default buffer). */
 async function postMultipartDirect(path: string, body: FormData): Promise<Response> {
-  const bases = [
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, ""),
-    "http://127.0.0.1:8765",
-    "http://localhost:8765",
-  ].filter((v): v is string => Boolean(v));
+  const bases = DIRECT_CANDIDATES.filter((base): base is string => Boolean(base));
   let lastError: unknown;
   for (const base of bases) {
     try {
