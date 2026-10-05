@@ -9,3 +9,5 @@ dist/
 *.egg-info/
 .DS_Store
 .vercel
+backend.log
+nohup.out
