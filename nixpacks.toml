@@ -2,7 +2,11 @@
 nixPkgs = ["python311", "ffmpeg"]
 
 [phases.install]
-cmds = ["pip install -r backend/requirements.txt"]
+cmds = [
+    "pip install --upgrade pip",
+    "pip install -r backend/requirements.txt",
+    "python -c 'from backend.app.demo_scene import write_demo_files; from pathlib import Path; write_demo_files(Path(\"data/demo\"))'"
+]
 
 [start]
 cmd = "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT"
