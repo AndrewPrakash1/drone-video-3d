@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: onepass-backend
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd /opt/render/project/src && python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 8765
