@@ -562,50 +562,76 @@ export default function MissionPage() {
   }
 
   const statusBadge = useMemo(() => {
-    if (state === "running") return <Badge className="bg-cyan-500/20 text-cyan-200">Reconstructing</Badge>;
-    if (state === "done") return <Badge className="bg-emerald-500/20 text-emerald-200">Complete</Badge>;
+    if (state === "running") return <Badge className="rounded-full bg-[#0071e3]/12 text-[#0071e3]">Reconstructing</Badge>;
+    if (state === "done") return <Badge className="rounded-full bg-emerald-500/12 text-emerald-700">Complete</Badge>;
     if (state === "error") return <Badge variant="destructive">Failed</Badge>;
-    return <Badge variant="secondary">Idle</Badge>;
+    return <Badge variant="secondary" className="rounded-full bg-black/5 text-[var(--apple-muted)]">Idle</Badge>;
   }, [state]);
 
   const showEmptyHint = state === "idle" && points.length === 0;
   const shownPoints = finalCloud ?? points;
 
+  const panel = "apple-panel ring-0 bg-white text-[var(--apple-text)]";
+
   return (
-    <div className="flex min-h-screen flex-col bg-[#070b14] text-slate-100">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-400/80">SIH26158 · NTRO</p>
-          <h1 className="text-lg font-semibold tracking-tight">OnePass — single-pass drone video to 3D</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {apiOk === false ? (
-            <Badge variant="destructive">API offline — start uvicorn on 8765</Badge>
-          ) : apiOk === true ? (
-            <Badge className="bg-emerald-500/20 text-emerald-200">API connected</Badge>
-          ) : null}
-          {statusBadge}
-          <Button onClick={onDemo} disabled={state === "running"} className="bg-cyan-500 text-slate-950 hover:bg-cyan-400">
-            {state === "running" ? <Loader2 className="animate-spin" /> : <Radar />}
-            Run proxy mission
-          </Button>
-          <Button onClick={onBrighton} disabled={state === "running"} variant="outline">
-            Real DJI flight
-          </Button>
+    <div className="flex min-h-screen flex-col bg-[var(--apple-bg)] text-[var(--apple-text)]">
+      <header className="apple-nav sticky top-0 z-50">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-6 py-3">
+          <div className="flex items-center gap-8">
+            <span className="text-[21px] font-semibold tracking-tight">OnePass</span>
+            <nav className="hidden items-center gap-6 text-sm text-[var(--apple-muted)] sm:flex">
+              <span>Mission</span>
+              <span>Reconstruction</span>
+              <span>Spatial</span>
+            </nav>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {apiOk === false ? (
+              <Badge variant="destructive" className="rounded-full">API offline</Badge>
+            ) : apiOk === true ? (
+              <Badge className="rounded-full bg-emerald-500/12 text-emerald-700">Connected</Badge>
+            ) : null}
+            {statusBadge}
+            <Button variant="appleBlack" size="lg" onClick={onDemo} disabled={state === "running"}>
+              {state === "running" ? <Loader2 className="animate-spin" /> : <Radar />}
+              Proxy mission
+            </Button>
+            <Button variant="appleOutline" size="lg" onClick={onBrighton} disabled={state === "running"}>
+              DJI flight
+            </Button>
+          </div>
         </div>
       </header>
 
+      <section className="apple-hero border-b border-black/[0.06] px-6 py-10 text-center">
+        <p className="text-sm font-medium text-[#bf4800]">SIH26158 · NTRO</p>
+        <h1 className="apple-headline-gradient mx-auto mt-2 max-w-3xl text-[40px] font-semibold leading-tight tracking-tight md:text-[48px]">
+          Single-pass drone video to metric 3D.
+        </h1>
+        <p className="mx-auto mt-3 max-w-xl text-lg text-[var(--apple-muted)]">
+          Upload once. Reconstruct mesh, cameras, and a checkable spatial layer — in one workflow.
+        </p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-4">
+          <Button variant="appleBlack" size="lg" onClick={onBrighton} disabled={state === "running"}>
+            Start real flight
+          </Button>
+          <button type="button" className="apple-link" onClick={onDemo} disabled={state === "running"}>
+            Try proxy mission →
+          </button>
+        </div>
+      </section>
+
       {apiOk === false ? (
-        <div className="border-b border-rose-500/30 bg-rose-950/40 px-4 py-2 text-sm text-rose-100">
-          Dashboard cannot reach the API at <code className="rounded bg-black/30 px-1">{apiBase}</code>. In a second PowerShell window run:
-          <code className="ml-2 rounded bg-black/30 px-2 py-0.5 text-xs">cd backend; $env:PYTHONPATH=&quot;.&quot;; python -m uvicorn app.main:app --host 127.0.0.1 --port 8765</code>
-          <Button size="sm" variant="outline" className="ml-3" onClick={refreshHealth}>Retry</Button>
+        <div className="border-b border-rose-200 bg-rose-50 px-6 py-3 text-sm text-rose-900">
+          Dashboard cannot reach the API at <code className="rounded bg-white px-1">{apiBase}</code>. Run:
+          <code className="ml-2 rounded bg-white px-2 py-0.5 text-xs">cd backend; PYTHONPATH=. python -m uvicorn app.main:app --host 127.0.0.1 --port 8765</code>
+          <Button size="sm" variant="appleOutline" className="ml-3" onClick={refreshHealth}>Retry</Button>
         </div>
       ) : null}
 
-      <main className="grid flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <section className="flex min-h-[520px] flex-col gap-3">
-          <div className="relative min-h-[480px] flex-1">
+      <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-6 px-6 py-8">
+        <section className="flex w-full flex-col gap-4">
+          <div className="apple-viewport relative w-full min-h-[240px] bg-[#1d1d1f] aspect-[16/9] sm:aspect-[18/9] lg:aspect-[2.35/1] lg:min-h-[360px]">
             <ReconViewport
               points={shownPoints}
               cameras={cameras}
@@ -626,7 +652,7 @@ export default function MissionPage() {
               <div className="pointer-events-none absolute bottom-3 left-3 right-3 flex justify-center">
                 <div className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-xl border border-white/10 bg-black/70 px-4 py-3 shadow-xl">
                   <MapPin className="h-5 w-5 shrink-0 text-amber-400" />
-                  <p className="text-sm text-slate-200">
+                  <p className="text-sm text-[var(--apple-text)]">
                     GPU viewport. Run the real DJI flight to reconstruct a point cloud, camera frustums, and surface mesh.
                   </p>
                   <Button onClick={onBrighton} className="shrink-0">
@@ -641,56 +667,69 @@ export default function MissionPage() {
               </div>
             ) : null}
             {shownPoints.length > 0 ? (
-              <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/70 px-3 py-1.5 text-xs text-slate-200">
+              <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/70 px-3 py-1.5 text-xs text-[var(--apple-text)]">
                 {shownPoints.length.toLocaleString()} points · drag to orbit
               </div>
             ) : null}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-slate-400">View</span>
-            {(["points", "mesh", "neural"] as ViewMode[]).map((mode) => (
-              <Button
-                key={mode}
-                size="sm"
-                variant={viewMode === mode ? "default" : "outline"}
-                disabled={mode === "neural" && !splatUrl}
-                title={mode === "neural" && !splatUrl ? splatNote || "Trains after an upload when CUDA and gsplat are installed" : undefined}
-                onClick={() => setViewMode(mode)}
-              >
-                {mode === "neural" ? "Neural" : mode === "mesh" ? "Mesh" : "Points"}
-              </Button>
-            ))}
-            <span className="ml-2 text-xs text-slate-400">Color</span>
-            {(["confidence", "rgb", "height"] as ColorMode[]).map((m) => (
-              <Button key={m} size="sm" variant={colorMode === m ? "default" : "outline"} onClick={() => setColorMode(m)}>
-                {m}
-              </Button>
-            ))}
-            <Button size="sm" variant={showOcclusion ? "default" : "outline"} onClick={() => { setShowOcclusion((v) => !v); setViewMode("mesh"); }}>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs font-medium text-[var(--apple-muted)]">View</span>
+            <div className="apple-segment" role="tablist" aria-label="View mode">
+              {(["points", "mesh", "neural"] as ViewMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="tab"
+                  className="apple-segment-btn"
+                  data-active={viewMode === mode}
+                  disabled={mode === "neural" && !splatUrl}
+                  title={mode === "neural" && !splatUrl ? splatNote || "Trains after an upload when CUDA and gsplat are installed" : undefined}
+                  onClick={() => setViewMode(mode)}
+                >
+                  {mode === "neural" ? "Neural" : mode === "mesh" ? "Mesh" : "Points"}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs font-medium text-[var(--apple-muted)]">Color</span>
+            <div className="apple-segment" role="tablist" aria-label="Color mode">
+              {(["confidence", "rgb", "height"] as ColorMode[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  className="apple-segment-btn capitalize"
+                  data-active={colorMode === m}
+                  onClick={() => setColorMode(m)}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <Button size="sm" variant={showOcclusion ? "apple" : "appleOutline"} onClick={() => { setShowOcclusion((v) => !v); setViewMode("mesh"); }}>
               Occlusion
             </Button>
-            <Button size="sm" variant={measuring ? "default" : "outline"} onClick={() => { setMeasuring((v) => !v); setPicks([]); }}>
+            <Button size="sm" variant={measuring ? "apple" : "appleOutline"} onClick={() => { setMeasuring((v) => !v); setPicks([]); }}>
               <Ruler /> Measure
             </Button>
-            <div className="ml-auto flex gap-3 text-xs text-slate-400">
-              <span className="text-emerald-400">High {stats.high}</span>
-              <span className="text-amber-300">Med {stats.medium}</span>
-              <span className="text-rose-400">Low {stats.low}</span>
+            <div className="ml-auto flex gap-3 text-xs text-[var(--apple-muted)]">
+              <span className="text-emerald-600">High {stats.high}</span>
+              <span className="text-amber-600">Med {stats.medium}</span>
+              <span className="text-rose-600">Low {stats.low}</span>
               <span>{stats.points} points</span>
             </div>
           </div>
         </section>
 
-        <aside className="flex flex-col gap-3">
-          <Card className="border-white/10 bg-slate-900/50">
+        <aside className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <Card className={panel}>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Mission ingest</CardTitle>
+              <CardTitle className="text-[17px] font-semibold tracking-tight">Mission ingest</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-xs text-slate-400">{message}</p>
+              <p className="text-xs text-[var(--apple-muted)]">{message}</p>
               <Progress value={progress} />
               {error ? (
-                <p className="flex items-start gap-2 text-xs text-rose-300">
+                <p className="flex items-start gap-2 text-xs text-rose-600">
                   <TriangleAlert className="mt-0.5 h-3.5 w-3.5" /> {error}
                 </p>
               ) : null}
@@ -700,23 +739,23 @@ export default function MissionPage() {
                 <Input id="video" type="file" accept="video/*" onChange={(e) => setVideoFile(e.target.files?.[0] ?? null)} />
                 <Label htmlFor="csv">Telemetry CSV</Label>
                 <Input id="csv" type="file" accept=".csv,text/csv" onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)} />
-                <Button variant="outline" onClick={onUpload} disabled={state === "running"}>
+                <Button variant="appleBlack" onClick={onUpload} disabled={state === "running"}>
                   <Upload /> Reconstruct upload
                 </Button>
               </div>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[11px] leading-relaxed text-[var(--apple-muted)]">
                 API: {apiBase}. CSV columns: timestamp, lat, lon, alt, heading, speed, hdop. Mode: {reconMode}. COLMAP {adapters.colmap ? "on PATH — live SfM fusion" : "not on PATH"}; VGGT {vggtLabel(adapters.vggt)}. Gaussian {splatHealth?.available ? `ready${splatHealth.device ? ` on ${splatHealth.device}` : ""}` : splatHealth?.reason || "install CUDA gsplat to train the neural view"}. Generative spatial model {spatialModelHealth?.inference_ready ? "inference ready" : spatialModelHealth?.architecture_ready ? "architecture scaffolded — training pending" : "optional model dependencies unavailable"}.
               </p>
             </CardContent>
           </Card>
 
-          <Card className="border-white/10 bg-slate-900/50">
+          <Card className={panel}>
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <Activity className="h-4 w-4 text-cyan-400" /> Live UAV
+              <CardTitle className="flex items-center gap-2 text-[17px] font-semibold tracking-tight">
+                <Activity className="h-4 w-4 text-[#0071e3]" /> Live UAV
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-1 text-xs font-mono text-slate-300">
+            <CardContent className="space-y-1 text-xs font-mono text-[var(--apple-text)]">
               {pose ? (
                 <>
                   <div>lat {pose.lat.toFixed(6)}</div>
@@ -725,31 +764,31 @@ export default function MissionPage() {
                   {pose.hdop != null ? <div>HDOP {pose.hdop}</div> : null}
                 </>
               ) : (
-                <p className="font-sans text-slate-500">Waiting for first pose.</p>
+                <p className="font-sans text-[var(--apple-muted)]">Waiting for first pose.</p>
               )}
             </CardContent>
           </Card>
 
-          <Card className="border-white/10 bg-slate-900/50">
+          <Card className={panel}>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Metric check (judges)</CardTitle>
+              <CardTitle className="text-[17px] font-semibold tracking-tight">Metric check (judges)</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              <p className="text-xs text-slate-400">
-                Known eave on the proxy building is <strong className="text-slate-200">20.0 m</strong>. Click Measure, then the two violet markers.
+              <p className="text-xs text-[var(--apple-muted)]">
+                Known eave on the proxy building is <strong className="text-[var(--apple-text)]">20.0 m</strong>. Click Measure, then the two violet markers.
               </p>
               {metric ? (
-                <div className="rounded-md border border-white/10 bg-black/30 p-2 font-mono text-xs">
+                <div className="rounded-xl border border-black/8 bg-[#f5f5f7] p-2 font-mono text-xs">
                   <div>measured {metric.measured_m.toFixed(3)} m</div>
                   {metric.true_length_m != null ? <div>true {metric.true_length_m.toFixed(3)} m</div> : null}
                   {metric.abs_error_m != null ? <div>error {metric.abs_error_m.toFixed(3)} m ({metric.pct_error}%)</div> : null}
-                  {metric.pass === true ? <div className="text-emerald-400">PASS within tolerance</div> : null}
-                  {metric.pass === false ? <div className="text-rose-400">FAIL — do not overclaim accuracy</div> : null}
+                  {metric.pass === true ? <div className="text-emerald-700">PASS within tolerance</div> : null}
+                  {metric.pass === false ? <div className="text-rose-600">FAIL — do not overclaim accuracy</div> : null}
                 </div>
               ) : (
-                <p className="text-xs text-slate-500">No measurement yet.</p>
+                <p className="text-xs text-[var(--apple-muted)]">No measurement yet.</p>
               )}
-              {picks.length > 0 ? <p className="text-[11px] text-slate-500">{picks.length}/2 points picked</p> : null}
+              {picks.length > 0 ? <p className="text-[11px] text-[var(--apple-muted)]">{picks.length}/2 points picked</p> : null}
               {reference && origin ? (
                 <Button
                   size="sm"
@@ -769,29 +808,29 @@ export default function MissionPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-white/10 bg-slate-900/50">
+          <Card className={panel}>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Spatial layer</CardTitle>
+              <CardTitle className="text-[17px] font-semibold tracking-tight">Spatial layer</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-2 text-xs text-slate-300">
-              <p className="text-slate-400">
+            <CardContent className="space-y-2 text-xs text-[var(--apple-text)]">
+              <p className="text-[var(--apple-muted)]">
                 {spatial
                   ? `${Math.round(spatial.summary.seen_fraction * 100)}% of the surface was seen. Largest blind patch: ${spatial.summary.largest_unseen_patch.toLocaleString()} faces. ${spatial.summary.faultlines.toLocaleString()} faultlines.`
                   : "Occlusion map appears when a mesh and cameras are ready."}
               </p>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant={spatialTool === "agent" ? "default" : "outline"} onClick={() => { setSpatialTool((t) => (t === "agent" ? "off" : "agent")); setViewMode("mesh"); setAgentStart(null); setAgentGoal(null); setRoute(null); }}>
+                <Button size="sm" variant={spatialTool === "agent" ? "apple" : "appleOutline"} onClick={() => { setSpatialTool((t) => (t === "agent" ? "off" : "agent")); setViewMode("mesh"); setAgentStart(null); setAgentGoal(null); setRoute(null); }}>
                   Ground agent
                 </Button>
-                <Button size="sm" variant={spatialTool === "chisel" ? "default" : "outline"} onClick={() => { setSpatialTool((t) => (t === "chisel" ? "off" : "chisel")); setViewMode("mesh"); }}>
+                <Button size="sm" variant={spatialTool === "chisel" ? "apple" : "appleOutline"} onClick={() => { setSpatialTool((t) => (t === "chisel" ? "off" : "chisel")); setViewMode("mesh"); }}>
                   Chisel
                 </Button>
               </div>
               {spatialTool === "agent" ? (
-                <p className="text-slate-400">{agentStart && !agentGoal ? "Click the goal on the mesh." : "Click a start on the mesh, then a goal. The route prefers ground the drone saw and stops at facade blocks."}</p>
+                <p className="text-[var(--apple-muted)]">{agentStart && !agentGoal ? "Click the goal on the mesh." : "Click a start on the mesh, then a goal. The route prefers ground the drone saw and stops at facade blocks."}</p>
               ) : null}
               {route ? (
-                <div className="rounded-md border border-white/10 bg-black/30 p-2 font-mono">
+                <div className="rounded-xl border border-black/8 bg-[#f5f5f7] p-2 font-mono">
                   {route.path.length ? <div>{route.length_m.toFixed(1)} m · {route.flags.length} flags</div> : <div>{route.reason || "No route"}</div>}
                   {route.flags.slice(0, 6).map((flag, i) => (
                     <div key={`${flag.kind}-${i}`}>{flag.kind} {flag.e.toFixed(1)}, {flag.n.toFixed(1)}</div>
@@ -802,7 +841,7 @@ export default function MissionPage() {
                 <div className="grid grid-cols-2 gap-2">
                   <label className="col-span-2">
                     Tag
-                    <select className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1" value={chiselTag} onChange={(e) => setChiselTag(e.target.value as ChiselTag)}>
+                    <select className="apple-input mt-1 w-full px-2 py-1.5 text-sm" value={chiselTag} onChange={(e) => setChiselTag(e.target.value as ChiselTag)}>
                       {(["road", "facade", "ground", "fill"] as ChiselTag[]).map((tag) => <option key={tag} value={tag}>{tag}</option>)}
                     </select>
                   </label>
@@ -813,13 +852,13 @@ export default function MissionPage() {
                         type="number"
                         min={0.5}
                         step={0.5}
-                        className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1"
+                        className="apple-input mt-1 w-full px-2 py-1.5 text-sm"
                         value={chiselSize[key]}
                         onChange={(e) => setChiselSize((size) => ({ ...size, [key]: Math.max(0.5, Number(e.target.value) || 0.5) }))}
                       />
                     </label>
                   ))}
-                  <p className="col-span-2 text-slate-400">Click the mesh. The box is in the same metres as the GPS model. Facade blocks the agent, road is cheap, fill marks a blind spot as covered.</p>
+                  <p className="col-span-2 text-[var(--apple-muted)]">Click the mesh. The box is in the same metres as the GPS model. Facade blocks the agent, road is cheap, fill marks a blind spot as covered.</p>
                 </div>
               ) : null}
               {chisel.length ? (
@@ -827,7 +866,7 @@ export default function MissionPage() {
                   {chisel.map((block) => (
                     <li key={block.id} className="flex items-center justify-between gap-2">
                       <span>{block.tag} {Math.round(block.max[0] - block.min[0])}×{Math.round(block.max[1] - block.min[1])}×{Math.round(block.max[2] - block.min[2])} m</span>
-                      <button type="button" className="text-rose-300" onClick={() => removeBlock(block.id)}>Remove</button>
+                      <button type="button" className="apple-link text-xs" onClick={() => removeBlock(block.id)}>Remove</button>
                     </li>
                   ))}
                 </ul>
@@ -835,9 +874,9 @@ export default function MissionPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-white/10 bg-slate-900/50">
+          <Card className={panel}>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Photogrammetry</CardTitle>
+              <CardTitle className="text-[17px] font-semibold tracking-tight">Photogrammetry</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {([
@@ -855,9 +894,9 @@ export default function MissionPage() {
                 return (
                   <div key={id} className="flex items-start justify-between gap-2 text-xs">
                     <div>
-                      <div className="text-slate-200">{stage?.label ?? fallback}</div>
+                      <div className="text-[var(--apple-text)]">{stage?.label ?? fallback}</div>
                       {stage?.stats ? (
-                        <div className="text-slate-500">
+                        <div className="text-[var(--apple-muted)]">
                           {Object.entries(stage.stats)
                             .filter(([k, v]) => ["keypoints", "ransac_inliers", "outliers_removed", "far_points_removed", "cameras", "points", "dense_points", "rmse_after_px", "method", "triangles", "chunks", "device", "reason", "gaussians", "steps", "loss", "undistorted"].includes(k) && v != null)
                             .map(([k, v]) => `${k} ${v}`)
@@ -874,19 +913,19 @@ export default function MissionPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-white/10 bg-slate-900/50">
+          <Card className={panel}>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Eight challenges</CardTitle>
+              <CardTitle className="text-[17px] font-semibold tracking-tight">Eight challenges</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {challenges.length === 0 ? (
-                <p className="text-xs text-slate-500">They populate as the adaptive layer runs.</p>
+                <p className="text-xs text-[var(--apple-muted)]">They populate as the adaptive layer runs.</p>
               ) : (
                 challenges.map((c) => (
                   <div key={c.id} className="flex items-start justify-between gap-2 text-xs">
                     <div>
-                      <div className="text-slate-200">{c.label}</div>
-                      <div className="text-slate-500">{c.response}</div>
+                      <div className="text-[var(--apple-text)]">{c.label}</div>
+                      <div className="text-[var(--apple-muted)]">{c.response}</div>
                     </div>
                     <Badge variant={c.active ? "default" : "secondary"} className="shrink-0">
                       {c.active ? "on" : "idle"}
@@ -898,9 +937,9 @@ export default function MissionPage() {
           </Card>
 
           {timeline.length > 0 ? (
-            <Card className="border-white/10 bg-slate-900/50">
+            <Card className={panel}>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Frame quality</CardTitle>
+                <CardTitle className="text-[17px] font-semibold tracking-tight">Frame quality</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex h-12 items-end gap-px">
@@ -908,7 +947,7 @@ export default function MissionPage() {
                     <div
                       key={i}
                       title={`${f.t.toFixed(2)}s score ${f.score.toFixed(2)}`}
-                      className={f.keep ? "bg-cyan-400" : "bg-slate-600"}
+                      className={f.keep ? "bg-[#0071e3]" : "bg-black/15"}
                       style={{ width: `${100 / timeline.length}%`, height: `${Math.max(8, f.score * 100)}%` }}
                     />
                   ))}
@@ -918,17 +957,21 @@ export default function MissionPage() {
           ) : null}
 
           {jobId && state === "done" ? (
-            <a href={apiUrl(`/jobs/${jobId}/cloud.ply`)} className={buttonVariants({ variant: "outline" })}>
+            <a href={apiUrl(`/jobs/${jobId}/cloud.ply`)} className={buttonVariants({ variant: "appleOutline", size: "lg" })}>
               <Download /> Download PLY
             </a>
           ) : null}
           {splatUrl ? (
-            <a href={splatUrl} className={buttonVariants({ variant: "outline" })}>
+            <a href={splatUrl} className={buttonVariants({ variant: "appleOutline", size: "lg" })}>
               <Download /> Download neural PLY
             </a>
           ) : null}
         </aside>
       </main>
+
+      <footer className="mt-auto border-t border-black/[0.06] bg-[#f5f5f7] px-6 py-8 text-center text-xs text-[var(--apple-muted)]">
+        OnePass · SIH26158 · Metric drone reconstruction for judges and operators.
+      </footer>
     </div>
   );
 }

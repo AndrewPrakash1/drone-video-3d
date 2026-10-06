@@ -49,8 +49,18 @@
 }
 
 :root {
+  --apple-bg: #f5f5f7;
+  --apple-surface: #ffffff;
+  --apple-text: #1d1d1f;
+  --apple-muted: #6e6e73;
+  --apple-link: #0071e3;
+  --apple-link-hover: #0077ed;
+  --apple-border: rgba(0, 0, 0, 0.08);
+  --apple-nav: rgba(251, 251, 253, 0.72);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
+  --primary: oklch(0.488 0.19 250);
+  --primary-foreground: oklch(0.985 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
@@ -123,8 +133,87 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    letter-spacing: -0.01em;
   }
   html {
     @apply font-sans;
+  }
+}
+
+@layer components {
+  .apple-nav {
+    background: var(--apple-nav);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--apple-border);
+  }
+  .apple-panel {
+    background: var(--apple-surface);
+    border: 1px solid var(--apple-border);
+    border-radius: 18px;
+    box-shadow: 0 2px 16px rgba(0, 0, 0, 0.04);
+  }
+  .apple-viewport {
+    border-radius: 28px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+  }
+  .apple-input {
+    border-radius: 12px;
+    border: 1px solid var(--apple-border);
+    background: #fff;
+    color: var(--apple-text);
+  }
+  .apple-hero {
+    background: linear-gradient(180deg, #ffffff 0%, #f5f5f7 100%);
+  }
+  .apple-segment {
+    display: inline-flex;
+    padding: 3px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.06);
+    gap: 2px;
+  }
+  .apple-segment-btn {
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--apple-muted);
+    transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .apple-segment-btn[data-active="true"] {
+    background: #fff;
+    color: var(--apple-text);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  }
+  .apple-segment-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .apple-link {
+    color: var(--apple-link);
+    font-size: 14px;
+  }
+  .apple-link:hover {
+    color: var(--apple-link-hover);
+    text-decoration: underline;
+  }
+  /* Hero headline: ground truth → flight path → metric sky (drone / 3D) */
+  .apple-headline-gradient {
+    background: linear-gradient(
+      102deg,
+      #1d1d1f 0%,
+      #434345 14%,
+      #0071e3 42%,
+      #32ade6 68%,
+      #64d2ff 92%,
+      #5ac8fa 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
 }
